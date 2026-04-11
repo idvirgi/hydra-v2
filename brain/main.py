@@ -34,7 +34,7 @@ client = OpenAI(
     api_key=read_env("OPENROUTER_API_KEY"),
     base_url=read_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
     default_headers={
-        "HTTP-Referer": "https://github.com/denideni/hydra-v2",
+        "HTTP-Referer": "https://github.com/idvirgi/hydra-v2",
         "X-Title": "HYDRA v2",
     },
 )
