@@ -169,6 +169,35 @@ def fetch_workflows(opener: request.OpenerDirector, base_url: str) -> dict[str, 
     return {item["name"]: item for item in items}
 
 
+def fetch_workflow_detail(
+    opener: request.OpenerDirector,
+    base_url: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    response = api_request(opener, "GET", f"{base_url}/rest/workflows/{workflow_id}")
+    payload = unwrap_data(response)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Unable to fetch workflow detail for {workflow_id}")
+    return payload
+
+
+def activate_workflow(
+    opener: request.OpenerDirector,
+    base_url: str,
+    workflow_id: str,
+) -> None:
+    detail = fetch_workflow_detail(opener, base_url, workflow_id)
+    version_id = detail.get("versionId")
+    if not version_id:
+        raise RuntimeError(f"Workflow {workflow_id} is missing versionId for activation")
+    api_request(
+        opener,
+        "POST",
+        f"{base_url}/rest/workflows/{workflow_id}/activate",
+        {"versionId": version_id},
+    )
+
+
 def upsert_workflow(
     opener: request.OpenerDirector,
     base_url: str,
@@ -189,7 +218,7 @@ def upsert_workflow(
         workflow_id = created["id"]
         print(f"WORKFLOW_CREATED={payload['name']}")
 
-    api_request(opener, "PATCH", f"{base_url}/rest/workflows/{workflow_id}", {"active": True})
+    activate_workflow(opener, base_url, workflow_id)
     print(f"WORKFLOW_ACTIVATED={payload['name']}")
 
 
