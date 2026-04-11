@@ -27,6 +27,14 @@ def env_value(values: dict[str, str], name: str, default: str = "") -> str:
     return values.get(name, os.getenv(name, default)).strip()
 
 
+def first_env_value(values: dict[str, str], *names: str) -> str:
+    for name in names:
+        value = env_value(values, name)
+        if value:
+            return value
+    return ""
+
+
 def opener_with_cookies() -> request.OpenerDirector:
     return request.build_opener(request.HTTPCookieProcessor(CookieJar()))
 
@@ -96,9 +104,15 @@ def main() -> int:
 
     if not args.core_only:
         try:
+            supabase_backend_key = first_env_value(
+                env_values,
+                "SUPABASE_SECRET_KEY",
+                "SUPABASE_SERVICE_ROLE_KEY",
+                "SUPABASE_SERVICE_KEY",
+            )
             supabase_headers = {
-                "apikey": env_value(env_values, "SUPABASE_SERVICE_KEY") or env_value(env_values, "SUPABASE_KEY"),
-                "Authorization": f"Bearer {env_value(env_values, 'SUPABASE_SERVICE_KEY') or env_value(env_values, 'SUPABASE_KEY')}",
+                "apikey": supabase_backend_key,
+                "Authorization": f"Bearer {supabase_backend_key}",
             }
             status, _ = http_json(
                 f"{env_value(env_values, 'SUPABASE_URL').rstrip('/')}/rest/v1/",
