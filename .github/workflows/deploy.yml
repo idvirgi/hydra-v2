@@ -22,11 +22,13 @@ jobs:
             fi
             cd "$HOME/hydra-v2"
             git pull --ff-only origin main
+            mkdir -p n8n_data logs
+            chown -R 1000:1000 n8n_data
             docker compose up -d --build
-            sleep 20
-            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" python:3.11-slim \
+            until curl -sf http://127.0.0.1:5678 >/dev/null; do sleep 5; done
+            docker run --rm --network host -v "$HOME/hydra-v2:/work" python:3.11-slim \
               python /work/tools/sync_n8n_workflows.py \
-              --base-url http://hydra_n8n:5678 \
+              --base-url http://127.0.0.1:5678 \
               --env-file /work/.env \
               --workflow-dir /work/n8n_workflows
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

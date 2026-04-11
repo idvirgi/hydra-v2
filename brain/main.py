@@ -122,7 +122,22 @@ def safe_json_load(text: str) -> dict:
         payload = "\n".join(
             line for line in payload.splitlines() if not line.strip().startswith("```")
         ).strip()
-    return json.loads(payload)
+
+    candidates = [payload]
+    object_start = payload.find("{")
+    object_end = payload.rfind("}")
+    if object_start != -1 and object_end != -1 and object_end > object_start:
+        candidates.append(payload[object_start : object_end + 1])
+
+    for candidate in candidates:
+        try:
+            loaded = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(loaded, dict):
+            return loaded
+
+    raise ValueError(f"Model did not return valid JSON object: {payload[:400]}")
 
 
 def extract_usage(response) -> tuple[int, int]:
@@ -133,26 +148,41 @@ def extract_usage(response) -> tuple[int, int]:
 
 
 def chat_json(model: str, prompt: str, temperature: float, max_tokens: int) -> dict:
-    response = client.chat.completions.create(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are the HYDRA market intelligence engine. "
-                    "Return valid JSON only and never wrap it in markdown."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-    )
-    prompt_tokens, completion_tokens = extract_usage(response)
-    cost_tracker(model, prompt_tokens, completion_tokens)
-    content = response.choices[0].message.content or "{}"
-    return safe_json_load(content)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are the HYDRA market intelligence engine. "
+                "Return valid JSON only and never wrap it in markdown."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    for attempt in range(1, 3):
+        response = client.chat.completions.create(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+            messages=messages,
+        )
+        prompt_tokens, completion_tokens = extract_usage(response)
+        cost_tracker(model, prompt_tokens, completion_tokens)
+        content = response.choices[0].message.content or "{}"
+        try:
+            return safe_json_load(content)
+        except ValueError:
+            logger.warning(
+                "Invalid JSON from model | model=%s attempt=%s content_excerpt=%r",
+                model,
+                attempt,
+                content[:400],
+            )
+            if attempt == 2:
+                raise
+
+    raise RuntimeError("chat_json exhausted retry attempts unexpectedly")
 
 
 def current_daily_cost() -> float:
