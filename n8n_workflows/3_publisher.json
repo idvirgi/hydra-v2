@@ -32,7 +32,7 @@
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
       "position": [
-        480,
+        460,
         320
       ],
       "credentials": {
@@ -58,21 +58,21 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        740,
+        700,
         320
       ]
     },
     {
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const draft = JSON.parse($json.value || '{}');\nif (!draft.draft_id || !draft.listing_title) {\n  throw new Error('Publish queue item is missing draft fields');\n}\nreturn [{ json: draft }];"
+        "jsCode": "const draft = JSON.parse($json.value || '{}');\nif (!draft.draft_id || !draft.listing_title || !draft.listing_description) {\n  throw new Error('Publish queue item is missing required listing fields');\n}\nreturn [{ json: draft }];"
       },
       "id": "parse-publish-item",
       "name": "Parse Publish Draft",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1000,
+        940,
         220
       ]
     },
@@ -86,7 +86,7 @@
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
       "position": [
-        1260,
+        1180,
         220
       ],
       "credentials": {
@@ -112,56 +112,246 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1520,
+        1420,
         220
       ]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "=https://openapi.etsy.com/v3/application/shops/{{$env.ETSY_SHOP_ID}}/listings",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "x-api-key",
-              "value": "={{$env.ETSY_API_KEY}}"
-            },
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{$env.ETSY_ACCESS_TOKEN}}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ ({ title: $('Parse Publish Draft').item.json.listing_title, description: $('Parse Publish Draft').item.json.listing_description, who_made: 'i_did', when_made: '2020_2026', taxonomy_id: 1, type: 'download', is_supply: false, should_auto_renew: false, state: 'draft', price: $('Parse Publish Draft').item.json.price_usd || 4.99, quantity: 999, tags: $('Parse Publish Draft').item.json.listing_tags, materials: $('Parse Publish Draft').item.json.materials }) }}"
+        "operation": "get",
+        "key": "hydra:etsy:oauth"
       },
-      "id": "etsy-create-draft",
-      "name": "Create Etsy Draft",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "load-etsy-oauth",
+      "name": "Load Etsy OAuth State",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
       "position": [
-        1780,
+        1660,
+        140
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const draft = $('Parse Publish Draft').item.json;\nconst raw = $json.value || '';\nconst placeholder = (value) => !value || value === '...' || String(value).includes('REPLACE_ME');\nlet state = {};\nif (raw) {\n  try {\n    state = JSON.parse(raw);\n  } catch (error) {\n    throw new Error(`Stored Etsy OAuth state is not valid JSON: ${error.message}`);\n  }\n}\nconst envAccessToken = placeholder($env.ETSY_ACCESS_TOKEN) ? '' : $env.ETSY_ACCESS_TOKEN;\nconst envRefreshToken = placeholder($env.ETSY_REFRESH_TOKEN) ? '' : $env.ETSY_REFRESH_TOKEN;\nconst envShopId = placeholder($env.ETSY_SHOP_ID) ? '' : $env.ETSY_SHOP_ID;\nconst envKeystring = placeholder($env.ETSY_KEYSTRING) ? '' : $env.ETSY_KEYSTRING;\nif (!envKeystring) {\n  throw new Error('Missing ETSY_KEYSTRING in n8n runtime');\n}\nconst etsy = {\n  keystring: envKeystring,\n  access_token: state.access_token || envAccessToken,\n  refresh_token: state.refresh_token || envRefreshToken,\n  shop_id: String(state.shop_id || envShopId || ''),\n  shop_name: state.shop_name || $env.ETSY_SHOP_NAME || '',\n  scope: state.scope || $env.ETSY_SCOPES || '',\n  expires_at: state.expires_at || null\n};\nif (!etsy.access_token && !etsy.refresh_token) {\n  throw new Error('Etsy OAuth is not connected. Complete the prepared Etsy OAuth callback after app approval.');\n}\nreturn [{ json: { ...draft, etsy } }];"
+      },
+      "id": "parse-etsy-oauth",
+      "name": "Parse Etsy Auth State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
         140
       ]
     },
     {
       "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.etsy.refresh_token || ''}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if-refresh-token",
+      "name": "Has Refresh Token?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.etsy.com/v3/public/oauth/token",
+        "method": "POST",
+        "responseFormat": "json",
+        "sendBody": true,
+        "bodyContentType": "form-urlencoded",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "grant_type",
+              "value": "refresh_token"
+            },
+            {
+              "name": "client_id",
+              "value": "={{$json.etsy.keystring}}"
+            },
+            {
+              "name": "refresh_token",
+              "value": "={{$json.etsy.refresh_token}}"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": []
+        }
+      },
+      "id": "refresh-etsy-token",
+      "name": "Refresh Etsy Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        2380,
+        40
+      ]
+    },
+    {
+      "parameters": {
         "language": "javaScript",
-        "jsCode": "const draft = $('Parse Publish Draft').item.json;\nconst response = $json;\nreturn [{\n  json: {\n    marker_key: `publish:done:${draft.fingerprint || draft.draft_id}`,\n    marker_value: JSON.stringify({\n      draft_id: draft.draft_id,\n      fingerprint: draft.fingerprint,\n      listing_id: response.listing_id ?? null,\n      listing_url: response.url ?? response.listing_url ?? null,\n      published_at: new Date().toISOString(),\n      state: response.state ?? 'draft'\n    })\n  }\n}];"
+        "jsCode": "const current = $('Parse Etsy Auth State').item.json;\nconst token = $json;\nconst expiresIn = Number(token.expires_in || 0);\nreturn [{\n  json: {\n    ...current,\n    etsy: {\n      ...current.etsy,\n      access_token: token.access_token,\n      refresh_token: token.refresh_token || current.etsy.refresh_token,\n      token_type: token.token_type || 'Bearer',\n      scope: token.scope || current.etsy.scope,\n      expires_at: expiresIn ? Math.floor(Date.now() / 1000) + expiresIn : null\n    }\n  }\n}];"
+      },
+      "id": "build-refreshed-etsy-state",
+      "name": "Build Refreshed Etsy State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "hydra:etsy:oauth",
+        "value": "={{JSON.stringify($json.etsy)}}"
+      },
+      "id": "store-etsy-oauth-state",
+      "name": "Store Etsy OAuth State",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2860,
+        -60
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const payload = $json;\nif (!payload.etsy.access_token) {\n  throw new Error('Etsy access token is missing. Complete the Etsy OAuth callback workflow first.');\n}\nif (!payload.etsy.shop_id) {\n  throw new Error('Etsy shop_id is missing. Complete the Etsy OAuth callback workflow so shop lookup can persist the shop id.');\n}\nreturn [{ json: payload }];"
+      },
+      "id": "ensure-etsy-ready",
+      "name": "Ensure Etsy Publish Ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://openapi.etsy.com/v3/application/shops/{{$json.etsy.shop_id}}/listings",
+        "method": "POST",
+        "responseFormat": "json",
+        "sendBody": true,
+        "bodyContentType": "form-urlencoded",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "quantity",
+              "value": "={{String($json.quantity || 999)}}"
+            },
+            {
+              "name": "title",
+              "value": "={{$json.listing_title}}"
+            },
+            {
+              "name": "description",
+              "value": "={{$json.listing_description}}"
+            },
+            {
+              "name": "price",
+              "value": "={{String($json.price_usd || 4.99)}}"
+            },
+            {
+              "name": "who_made",
+              "value": "i_did"
+            },
+            {
+              "name": "when_made",
+              "value": "made_to_order"
+            },
+            {
+              "name": "taxonomy_id",
+              "value": "={{String($json.taxonomy_id || 1)}}"
+            },
+            {
+              "name": "is_digital",
+              "value": "true"
+            },
+            {
+              "name": "type",
+              "value": "download"
+            },
+            {
+              "name": "should_auto_renew",
+              "value": "false"
+            },
+            {
+              "name": "is_supply",
+              "value": "false"
+            },
+            {
+              "name": "tags",
+              "value": "={{Array.isArray($json.listing_tags) ? $json.listing_tags.join(',') : ''}}"
+            },
+            {
+              "name": "materials",
+              "value": "={{Array.isArray($json.materials) ? $json.materials.join(',') : ''}}"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "x-api-key",
+              "value": "={{$json.etsy.keystring}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$json.etsy.access_token}}"
+            }
+          ]
+        }
+      },
+      "id": "etsy-create-draft",
+      "name": "Create Etsy Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const draft = $('Ensure Etsy Publish Ready').item.json;\nconst response = $json;\nreturn [{\n  json: {\n    marker_key: `publish:done:${draft.fingerprint || draft.draft_id}`,\n    marker_value: JSON.stringify({\n      draft_id: draft.draft_id,\n      fingerprint: draft.fingerprint,\n      listing_id: response.listing_id ?? null,\n      listing_url: response.url ?? response.listing_url ?? null,\n      published_at: new Date().toISOString(),\n      state: response.state ?? 'draft'\n    })\n  }\n}];"
       },
       "id": "build-publish-marker",
       "name": "Build Publish Marker",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2040,
-        140
+        3340,
+        160
       ]
     },
     {
@@ -175,8 +365,8 @@
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
       "position": [
-        2300,
-        140
+        3580,
+        160
       ],
       "credentials": {
         "redis": {
@@ -247,12 +437,90 @@
       "main": [
         [
           {
-            "node": "Create Etsy Draft",
+            "node": "Load Etsy OAuth State",
             "type": "main",
             "index": 0
           }
         ],
         []
+      ]
+    },
+    "Load Etsy OAuth State": {
+      "main": [
+        [
+          {
+            "node": "Parse Etsy Auth State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Etsy Auth State": {
+      "main": [
+        [
+          {
+            "node": "Has Refresh Token?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Refresh Token?": {
+      "main": [
+        [
+          {
+            "node": "Refresh Etsy Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ensure Etsy Publish Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Etsy Token": {
+      "main": [
+        [
+          {
+            "node": "Build Refreshed Etsy State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Refreshed Etsy State": {
+      "main": [
+        [
+          {
+            "node": "Store Etsy OAuth State",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Ensure Etsy Publish Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure Etsy Publish Ready": {
+      "main": [
+        [
+          {
+            "node": "Create Etsy Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Create Etsy Draft": {
@@ -279,5 +547,5 @@
     }
   },
   "settings": {},
-  "versionId": "hydra-publisher-v2"
+  "versionId": "hydra-publisher-v3"
 }

@@ -1,0 +1,221 @@
+{
+  "name": "HYDRA Etsy OAuth Callback",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "etsy/oauth/callback",
+        "responseMode": "lastNode"
+      },
+      "id": "etsy-oauth-webhook",
+      "name": "Etsy OAuth Callback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const query = $json.query || $json;\nconst code = query.code || '';\nconst state = query.state || '';\nconst placeholder = (value) => !value || String(value).includes('REPLACE_ME');\nconst keystring = placeholder($env.ETSY_KEYSTRING) ? '' : $env.ETSY_KEYSTRING;\nconst redirectUri = placeholder($env.ETSY_REDIRECT_URI) ? '' : $env.ETSY_REDIRECT_URI;\nconst shopName = $env.ETSY_SHOP_NAME || '';\nif (!code || !state) {\n  throw new Error('Missing code or state in Etsy OAuth callback');\n}\nif (!keystring) {\n  throw new Error('Missing ETSY_KEYSTRING in n8n runtime');\n}\nif (!redirectUri) {\n  throw new Error('Missing ETSY_REDIRECT_URI in n8n runtime');\n}\nreturn [{\n  json: {\n    code,\n    code_verifier: state,\n    client_id: keystring,\n    redirect_uri: redirectUri,\n    shop_name: shopName\n  }\n}];"
+      },
+      "id": "parse-etsy-callback",
+      "name": "Parse Etsy Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.etsy.com/v3/public/oauth/token",
+        "method": "POST",
+        "responseFormat": "json",
+        "sendBody": true,
+        "bodyContentType": "form-urlencoded",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "grant_type",
+              "value": "authorization_code"
+            },
+            {
+              "name": "client_id",
+              "value": "={{$json.client_id}}"
+            },
+            {
+              "name": "redirect_uri",
+              "value": "={{$json.redirect_uri}}"
+            },
+            {
+              "name": "code",
+              "value": "={{$json.code}}"
+            },
+            {
+              "name": "code_verifier",
+              "value": "={{$json.code_verifier}}"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": []
+        }
+      },
+      "id": "exchange-etsy-token",
+      "name": "Exchange Etsy Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://openapi.etsy.com/v3/application/shops?shop_name={{encodeURIComponent($('Parse Etsy Callback').item.json.shop_name)}}&limit=10",
+        "method": "GET",
+        "responseFormat": "json",
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "x-api-key",
+              "value": "={{$('Parse Etsy Callback').item.json.client_id}}"
+            }
+          ]
+        }
+      },
+      "id": "lookup-etsy-shop",
+      "name": "Lookup Etsy Shop",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        940,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const callback = $('Parse Etsy Callback').item.json;\nconst token = $('Exchange Etsy Token').item.json;\nconst lookup = Array.isArray($json.results) ? $json.results : [];\nconst exactShop = lookup.find((item) => String(item.shop_name || '').toLowerCase() === String(callback.shop_name || '').toLowerCase()) || null;\nconst expiresIn = Number(token.expires_in || 0);\nreturn [{\n  json: {\n    access_token: token.access_token,\n    refresh_token: token.refresh_token,\n    token_type: token.token_type || 'Bearer',\n    scope: token.scope || '',\n    expires_in: expiresIn,\n    expires_at: expiresIn ? Math.floor(Date.now() / 1000) + expiresIn : null,\n    shop_id: exactShop ? String(exactShop.shop_id) : '',\n    shop_name: exactShop ? exactShop.shop_name : callback.shop_name,\n    connected_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "build-etsy-oauth-state",
+      "name": "Build Etsy OAuth State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "hydra:etsy:oauth",
+        "value": "={{JSON.stringify($json)}}"
+      },
+      "id": "store-etsy-oauth",
+      "name": "Store Etsy OAuth State",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        220
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const payload = $('Build Etsy OAuth State').item.json;\nreturn [{\n  json: {\n    status: 'connected',\n    shop_name: payload.shop_name || null,\n    shop_id: payload.shop_id || null,\n    scope: payload.scope || '',\n    expires_at: payload.expires_at || null\n  }\n}];"
+      },
+      "id": "oauth-success-payload",
+      "name": "OAuth Success Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Etsy OAuth Callback": {
+      "main": [
+        [
+          {
+            "node": "Parse Etsy Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Etsy Callback": {
+      "main": [
+        [
+          {
+            "node": "Exchange Etsy Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exchange Etsy Token": {
+      "main": [
+        [
+          {
+            "node": "Lookup Etsy Shop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Etsy Shop": {
+      "main": [
+        [
+          {
+            "node": "Build Etsy OAuth State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Etsy OAuth State": {
+      "main": [
+        [
+          {
+            "node": "Store Etsy OAuth State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Etsy OAuth State": {
+      "main": [
+        [
+          {
+            "node": "OAuth Success Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "versionId": "hydra-etsy-oauth-callback-v1"
+}

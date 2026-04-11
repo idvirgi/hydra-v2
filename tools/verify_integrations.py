@@ -39,6 +39,11 @@ def opener_with_cookies() -> request.OpenerDirector:
     return request.build_opener(request.HTTPCookieProcessor(CookieJar()))
 
 
+def is_placeholder(value: str) -> bool:
+    lowered = value.strip().lower()
+    return not lowered or lowered in {"...", "replace_me"} or "replace" in lowered or "placeholder" in lowered
+
+
 def http_json(
     url: str,
     method: str = "GET",
@@ -66,6 +71,142 @@ def print_result(name: str, ok: bool, detail: str) -> None:
     print(f"{status} {name}: {detail}")
 
 
+def parse_json_string(raw: str) -> dict:
+    try:
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_etsy_state(
+    values: dict[str, str],
+    redis_client: redis.Redis | None,
+) -> dict[str, str | int]:
+    state: dict[str, str | int] = {}
+    if redis_client is not None:
+        try:
+            cached = redis_client.get("hydra:etsy:oauth")
+            if cached:
+                state.update(parse_json_string(cached))
+        except Exception:
+            pass
+
+    if not state.get("access_token"):
+        access_token = env_value(values, "ETSY_ACCESS_TOKEN")
+        if not is_placeholder(access_token):
+            state["access_token"] = access_token
+    if not state.get("refresh_token"):
+        refresh_token = env_value(values, "ETSY_REFRESH_TOKEN")
+        if not is_placeholder(refresh_token):
+            state["refresh_token"] = refresh_token
+    if not state.get("shop_id"):
+        shop_id = env_value(values, "ETSY_SHOP_ID")
+        if not is_placeholder(shop_id):
+            state["shop_id"] = shop_id
+    if not state.get("shop_name"):
+        shop_name = env_value(values, "ETSY_SHOP_NAME")
+        if not is_placeholder(shop_name):
+            state["shop_name"] = shop_name
+
+    return state
+
+
+def verify_etsy(
+    values: dict[str, str],
+    redis_client: redis.Redis | None,
+) -> tuple[bool, str]:
+    keystring = first_env_value(values, "ETSY_KEYSTRING", "ETSY_API_KEY")
+    shared_secret = env_value(values, "ETSY_SHARED_SECRET")
+    redirect_uri = env_value(values, "ETSY_REDIRECT_URI")
+    scopes = env_value(values, "ETSY_SCOPES")
+    etsy_state = get_etsy_state(values, redis_client)
+    access_token = str(etsy_state.get("access_token", "")).strip()
+    refresh_token = str(etsy_state.get("refresh_token", "")).strip()
+    shop_name = str(etsy_state.get("shop_name", "")).strip()
+    shop_id = str(etsy_state.get("shop_id", "")).strip()
+
+    missing = []
+    if is_placeholder(keystring):
+        missing.append("ETSY_KEYSTRING")
+    if is_placeholder(shared_secret):
+        missing.append("ETSY_SHARED_SECRET")
+    if is_placeholder(shop_name):
+        missing.append("ETSY_SHOP_NAME")
+    if is_placeholder(redirect_uri):
+        missing.append("ETSY_REDIRECT_URI")
+    if is_placeholder(scopes):
+        missing.append("ETSY_SCOPES")
+    if missing:
+        return False, f"state=READY_PENDING_ETSY_APPROVAL missing_config={','.join(missing)}"
+
+    try:
+        ping_status, ping_payload = http_json(
+            "https://openapi.etsy.com/v3/application/openapi-ping",
+            headers={"x-api-key": keystring},
+        )
+        app_id = ping_payload.get("application_id", "unknown") if isinstance(ping_payload, dict) else "unknown"
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return False, (
+            "state=READY_PENDING_ETSY_APPROVAL "
+            f"app_access={exc.code} detail={body[:200]}"
+        )
+
+    discovered_shop_id = shop_id
+    try:
+        search_status, search_payload = http_json(
+            f"https://openapi.etsy.com/v3/application/shops?{parse.urlencode({'shop_name': shop_name, 'limit': 10})}",
+            headers={"x-api-key": keystring},
+        )
+        results = search_payload.get("results", []) if isinstance(search_payload, dict) else []
+        exact_match = next(
+            (
+                item
+                for item in results
+                if isinstance(item, dict)
+                and str(item.get("shop_name", "")).strip().lower() == shop_name.lower()
+            ),
+            None,
+        )
+        if exact_match and not discovered_shop_id:
+            discovered_shop_id = str(exact_match.get("shop_id", "")).strip()
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return False, f"state=READY_PENDING_ETSY_APPROVAL shop_lookup={exc.code} detail={body[:200]}"
+
+    if is_placeholder(access_token) and is_placeholder(refresh_token):
+        return False, (
+            "state=READY_PENDING_ETSY_APPROVAL "
+            f"app_access={ping_status} application_id={app_id} token_state=missing shop_id={discovered_shop_id or 'missing'}"
+        )
+
+    if not discovered_shop_id:
+        return False, "state=READY_PENDING_ETSY_APPROVAL shop_id=missing_after_lookup"
+
+    etsy_headers = {
+        "x-api-key": keystring,
+        "Authorization": f"Bearer {access_token}",
+    }
+    try:
+        policy_status, _ = http_json(
+            f"https://openapi.etsy.com/v3/application/shops/{discovered_shop_id}/policies/return",
+            headers=etsy_headers,
+        )
+        return True, f"state=GREEN app_access={ping_status} token_check={policy_status} shop_id={discovered_shop_id}"
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            detail = "token_missing_or_invalid"
+        elif exc.code == 403:
+            detail = "token_scope_or_approval_blocked"
+        elif exc.code == 404:
+            detail = "shop_not_found"
+        else:
+            detail = "unexpected_api_error"
+        return False, f"state=READY_PENDING_ETSY_APPROVAL token_check={exc.code} detail={detail} body={body[:200]}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify HYDRA external integrations.")
     parser.add_argument("--env-file", default=".env")
@@ -76,9 +217,11 @@ def main() -> int:
 
     env_values = parse_env_file(Path(args.env_file))
     failures = 0
+    redis_client: redis.Redis | None = None
 
     try:
-        redis.Redis(host="redis", port=6379, decode_responses=True).ping()
+        redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
+        redis_client.ping()
         print_result("redis", True, "ping ok")
     except Exception as exc:
         failures += 1
@@ -126,17 +269,9 @@ def main() -> int:
             print_result("supabase", False, str(exc))
 
         try:
-            etsy_headers = {
-                "x-api-key": env_value(env_values, "ETSY_API_KEY"),
-                "Authorization": f"Bearer {env_value(env_values, 'ETSY_ACCESS_TOKEN')}",
-            }
-            status, payload = http_json(
-                f"https://openapi.etsy.com/v3/application/shops/{env_value(env_values, 'ETSY_SHOP_ID')}",
-                headers=etsy_headers,
-            )
-            shop_name = payload.get("shop_name", "") if isinstance(payload, dict) else ""
-            print_result("etsy", status == 200, f"status={status} shop={shop_name}")
-            if status != 200:
+            ok, detail = verify_etsy(env_values, redis_client)
+            print_result("etsy", ok, detail)
+            if not ok:
                 failures += 1
         except Exception as exc:
             failures += 1
