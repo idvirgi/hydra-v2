@@ -17,11 +17,27 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             set -e
-            if [ ! -d "$HOME/hydra-v2/.git" ]; then
-              git clone https://github.com/idvirgi/hydra-v2.git "$HOME/hydra-v2"
+            APP_DIR="$HOME/hydra-v2"
+            REPO_URL="https://github.com/idvirgi/hydra-v2.git"
+            if [ -d "$APP_DIR/.git" ]; then
+              cd "$APP_DIR"
+              git fetch origin main
+              git reset --hard origin/main
+            else
+              if [ -d "$APP_DIR" ]; then
+                BACKUP_DIR="$HOME/hydra-v2-pre-git-$(date +%Y%m%d-%H%M%S)"
+                mv "$APP_DIR" "$BACKUP_DIR"
+              fi
+              git clone "$REPO_URL" "$APP_DIR"
+              if [ -n "${BACKUP_DIR:-}" ]; then
+                for item in .env n8n_data redis_data logs; do
+                  if [ -e "$BACKUP_DIR/$item" ]; then
+                    mv "$BACKUP_DIR/$item" "$APP_DIR/$item"
+                  fi
+                done
+              fi
             fi
-            cd "$HOME/hydra-v2"
-            git pull --ff-only origin main
+            cd "$APP_DIR"
             mkdir -p n8n_data logs
             chown -R 1000:1000 n8n_data
             docker compose up -d --build
