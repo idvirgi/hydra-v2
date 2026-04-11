@@ -42,10 +42,14 @@ jobs:
             chown -R 1000:1000 n8n_data
             docker compose up -d --build
             until curl -sf http://127.0.0.1:5678 >/dev/null; do sleep 5; done
-            docker run --rm --network host -v "$HOME/hydra-v2:/work" python:3.11-slim \
+            docker run --rm --network host -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/sync_n8n_workflows.py \
               --base-url http://127.0.0.1:5678 \
               --env-file /work/.env \
               --workflow-dir /work/n8n_workflows
+            docker run --rm --network host -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+              python /work/tools/verify_integrations.py \
+              --env-file /work/.env \
+              --n8n-base-url http://127.0.0.1:5678
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
             docker logs hydra_brain --tail 20

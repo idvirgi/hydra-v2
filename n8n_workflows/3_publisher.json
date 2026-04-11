@@ -18,37 +18,102 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
-        240,
-        280
+        220,
+        320
       ]
     },
     {
       "parameters": {
-        "keepOnlySet": true,
-        "values": {
+        "operation": "lPop",
+        "key": "hydra:publish_queue"
+      },
+      "id": "redis-pop-publish",
+      "name": "Pop Publish Queue",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        480,
+        320
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
           "string": [
             {
-              "name": "listing_title",
-              "value": "Replace from prior builder workflow or webhook input"
-            },
-            {
-              "name": "listing_description",
-              "value": "Replace from prior builder workflow or webhook input"
-            },
-            {
-              "name": "listing_tags",
-              "value": "printable, planner, wall art, digital download"
+              "value1": "={{$json.value || ''}}",
+              "operation": "isNotEmpty"
             }
           ]
         }
       },
-      "id": "set-publisher-input",
-      "name": "Prepare Etsy Payload",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "id": "if-publish-item",
+      "name": "Queue Item Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
       "position": [
-        520,
-        280
+        740,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const draft = JSON.parse($json.value || '{}');\nif (!draft.draft_id || !draft.listing_title) {\n  throw new Error('Publish queue item is missing draft fields');\n}\nreturn [{ json: draft }];"
+      },
+      "id": "parse-publish-item",
+      "name": "Parse Publish Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "=publish:done:{{$json.fingerprint || $json.draft_id}}"
+      },
+      "id": "lookup-publish-marker",
+      "name": "Lookup Publish Marker",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1260,
+        220
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.value || ''}}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if-not-published",
+      "name": "Already Published?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        220
       ]
     },
     {
@@ -74,16 +139,51 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\"title\": $json.listing_title, \"description\": $json.listing_description, \"who_made\": \"i_did\", \"when_made\": \"2020_2026\", \"taxonomy_id\": 1, \"type\": \"download\", \"is_supply\": false, \"should_auto_renew\": true, \"price\": 4.99, \"quantity\": 999, \"tags\": $json.listing_tags.split(',').map(tag => tag.trim())}"
+        "jsonBody": "={{ ({ title: $('Parse Publish Draft').item.json.listing_title, description: $('Parse Publish Draft').item.json.listing_description, who_made: 'i_did', when_made: '2020_2026', taxonomy_id: 1, type: 'download', is_supply: false, should_auto_renew: false, state: 'draft', price: $('Parse Publish Draft').item.json.price_usd || 4.99, quantity: 999, tags: $('Parse Publish Draft').item.json.listing_tags, materials: $('Parse Publish Draft').item.json.materials }) }}"
       },
-      "id": "etsy-create-listing",
-      "name": "Create Etsy Listing",
+      "id": "etsy-create-draft",
+      "name": "Create Etsy Draft",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        280
+        1780,
+        140
       ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const draft = $('Parse Publish Draft').item.json;\nconst response = $json;\nreturn [{\n  json: {\n    marker_key: `publish:done:${draft.fingerprint || draft.draft_id}`,\n    marker_value: JSON.stringify({\n      draft_id: draft.draft_id,\n      fingerprint: draft.fingerprint,\n      listing_id: response.listing_id ?? null,\n      listing_url: response.url ?? response.listing_url ?? null,\n      published_at: new Date().toISOString(),\n      state: response.state ?? 'draft'\n    })\n  }\n}];"
+      },
+      "id": "build-publish-marker",
+      "name": "Build Publish Marker",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{$json.marker_key}}",
+        "value": "={{$json.marker_value}}"
+      },
+      "id": "store-publish-marker",
+      "name": "Store Publish Marker",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2300,
+        140
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
     }
   ],
   "connections": {
@@ -91,18 +191,86 @@
       "main": [
         [
           {
-            "node": "Prepare Etsy Payload",
+            "node": "Pop Publish Queue",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Prepare Etsy Payload": {
+    "Pop Publish Queue": {
       "main": [
         [
           {
-            "node": "Create Etsy Listing",
+            "node": "Queue Item Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Item Present?": {
+      "main": [
+        [
+          {
+            "node": "Parse Publish Draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Parse Publish Draft": {
+      "main": [
+        [
+          {
+            "node": "Lookup Publish Marker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Publish Marker": {
+      "main": [
+        [
+          {
+            "node": "Already Published?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Published?": {
+      "main": [
+        [
+          {
+            "node": "Create Etsy Draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Create Etsy Draft": {
+      "main": [
+        [
+          {
+            "node": "Build Publish Marker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Publish Marker": {
+      "main": [
+        [
+          {
+            "node": "Store Publish Marker",
             "type": "main",
             "index": 0
           }
@@ -111,5 +279,5 @@
     }
   },
   "settings": {},
-  "versionId": "hydra-publisher-v1"
+  "versionId": "hydra-publisher-v2"
 }

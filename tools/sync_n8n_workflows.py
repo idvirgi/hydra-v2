@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import os
 import sys
@@ -88,10 +89,72 @@ def login(opener: request.OpenerDirector, base_url: str, email: str, password: s
     print("N8N_LOGIN=ok")
 
 
-def workflow_payload(source: dict[str, Any]) -> dict[str, Any]:
+def fetch_credentials(opener: request.OpenerDirector, base_url: str) -> dict[str, dict[str, Any]]:
+    response = unwrap_data(api_request(opener, "GET", f"{base_url}/rest/credentials"))
+    items = response.get("data", []) if isinstance(response, dict) else response
+    return {item["name"]: item for item in items or []}
+
+
+def ensure_redis_credential(
+    opener: request.OpenerDirector,
+    base_url: str,
+    existing_by_name: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    current = existing_by_name.get("HYDRA Redis")
+    if current:
+        print("CREDENTIAL_OK=HYDRA Redis")
+        return current
+
+    created = unwrap_data(
+        api_request(
+            opener,
+            "POST",
+            f"{base_url}/rest/credentials",
+            {
+                "name": "HYDRA Redis",
+                "type": "redis",
+                "nodesAccess": [{"nodeType": "n8n-nodes-base.redis"}],
+                "data": {
+                    "host": "redis",
+                    "port": 6379,
+                    "database": 0,
+                    "user": "",
+                    "password": "",
+                    "ssl": False,
+                },
+            },
+        ),
+    )
+    print("CREDENTIAL_CREATED=HYDRA Redis")
+    return created
+
+
+def bind_credentials_to_nodes(
+    nodes: list[dict[str, Any]],
+    credentials_by_name: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    bound_nodes = copy.deepcopy(nodes)
+    redis_credential = credentials_by_name.get("HYDRA Redis")
+
+    for node in bound_nodes:
+        node_credentials = node.get("credentials") or {}
+        if "redis" in node_credentials and redis_credential:
+            node_credentials["redis"] = {
+                "id": redis_credential["id"],
+                "name": redis_credential["name"],
+            }
+            node["credentials"] = node_credentials
+
+    return bound_nodes
+
+
+def workflow_payload(
+    source: dict[str, Any],
+    credentials_by_name: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "name": source["name"],
-        "nodes": source["nodes"],
+        "nodes": bind_credentials_to_nodes(source["nodes"], credentials_by_name),
         "connections": source["connections"],
         "settings": source.get("settings", {}),
         "staticData": source.get("staticData"),
@@ -110,10 +173,11 @@ def upsert_workflow(
     opener: request.OpenerDirector,
     base_url: str,
     existing_by_name: dict[str, dict[str, Any]],
+    credentials_by_name: dict[str, dict[str, Any]],
     workflow_file: Path,
 ) -> None:
     source = json.loads(workflow_file.read_text(encoding="utf-8"))
-    payload = workflow_payload(source)
+    payload = workflow_payload(source, credentials_by_name)
     current = existing_by_name.get(payload["name"])
 
     if current:
@@ -147,10 +211,19 @@ def main() -> int:
     try:
         maybe_setup_owner(opener, args.base_url.rstrip("/"), owner_email, owner_password)
         login(opener, args.base_url.rstrip("/"), owner_email, owner_password)
+        credentials = fetch_credentials(opener, args.base_url.rstrip("/"))
+        redis_credential = ensure_redis_credential(opener, args.base_url.rstrip("/"), credentials)
+        credentials[redis_credential["name"]] = redis_credential
         existing = fetch_workflows(opener, args.base_url.rstrip("/"))
         workflow_dir = Path(args.workflow_dir)
         for workflow_file in sorted(workflow_dir.glob("*.json")):
-            upsert_workflow(opener, args.base_url.rstrip("/"), existing, workflow_file)
+            upsert_workflow(
+                opener,
+                args.base_url.rstrip("/"),
+                existing,
+                credentials,
+                workflow_file,
+            )
             existing = fetch_workflows(opener, args.base_url.rstrip("/"))
         return 0
     except error.HTTPError as exc:

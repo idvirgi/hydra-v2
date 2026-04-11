@@ -8,10 +8,25 @@ services:
     environment:
       GENERIC_TIMEZONE: Europe/Bucharest
       N8N_SECURE_COOKIE: "false"
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: ${N8N_HOST:-178.104.169.181}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      N8N_PORT: ${N8N_PORT:-5678}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://178.104.169.181:5678}
     volumes:
       - ./n8n_data:/home/node/.n8n
     networks:
       - hydra_net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:5678').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
   redis:
     image: redis:7-alpine
@@ -22,6 +37,12 @@ services:
       - ./redis_data:/data
     networks:
       - hydra_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   postgres:
     image: postgres:15-alpine
@@ -35,9 +56,18 @@ services:
       - hydra_postgres_store:/var/lib/postgresql/data
     networks:
       - hydra_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydra -d hydra_db"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   brain:
-    image: python:3.11-slim
+    build:
+      context: ./brain
+      dockerfile: Dockerfile
+    image: hydra-brain:latest
     container_name: hydra_brain
     restart: always
     working_dir: /app
@@ -46,13 +76,23 @@ services:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
     depends_on:
-      - redis
-      - postgres
-    command: >
-      sh -c "pip install --no-cache-dir openai redis python-dotenv supabase &&
-      python main.py"
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: python main.py
     networks:
       - hydra_net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import redis; redis.Redis(host='redis', port=6379).ping()\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
 networks:
   hydra_net:
