@@ -47,9 +47,10 @@ jobs:
               --base-url http://127.0.0.1:5678 \
               --env-file /work/.env \
               --workflow-dir /work/n8n_workflows
-            docker run --rm --network host -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/verify_integrations.py \
               --env-file /work/.env \
-              --n8n-base-url http://127.0.0.1:5678
+              --n8n-base-url http://hydra_n8n:5678 \
+              --core-only
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
             docker logs hydra_brain --tail 20

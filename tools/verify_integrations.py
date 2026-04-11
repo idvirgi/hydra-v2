@@ -63,6 +63,7 @@ def main() -> int:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--n8n-base-url", default="http://127.0.0.1:5678")
     parser.add_argument("--send-telegram", action="store_true")
+    parser.add_argument("--core-only", action="store_true")
     args = parser.parse_args()
 
     env_values = parse_env_file(Path(args.env_file))
@@ -93,38 +94,39 @@ def main() -> int:
         failures += 1
         print_result("openrouter", False, str(exc))
 
-    try:
-        supabase_headers = {
-            "apikey": env_value(env_values, "SUPABASE_SERVICE_KEY") or env_value(env_values, "SUPABASE_KEY"),
-            "Authorization": f"Bearer {env_value(env_values, 'SUPABASE_SERVICE_KEY') or env_value(env_values, 'SUPABASE_KEY')}",
-        }
-        status, _ = http_json(
-            f"{env_value(env_values, 'SUPABASE_URL').rstrip('/')}/rest/v1/",
-            headers=supabase_headers,
-        )
-        print_result("supabase", status < 400, f"status={status}")
-        if status >= 400:
+    if not args.core_only:
+        try:
+            supabase_headers = {
+                "apikey": env_value(env_values, "SUPABASE_SERVICE_KEY") or env_value(env_values, "SUPABASE_KEY"),
+                "Authorization": f"Bearer {env_value(env_values, 'SUPABASE_SERVICE_KEY') or env_value(env_values, 'SUPABASE_KEY')}",
+            }
+            status, _ = http_json(
+                f"{env_value(env_values, 'SUPABASE_URL').rstrip('/')}/rest/v1/",
+                headers=supabase_headers,
+            )
+            print_result("supabase", status < 400, f"status={status}")
+            if status >= 400:
+                failures += 1
+        except Exception as exc:
             failures += 1
-    except Exception as exc:
-        failures += 1
-        print_result("supabase", False, str(exc))
+            print_result("supabase", False, str(exc))
 
-    try:
-        etsy_headers = {
-            "x-api-key": env_value(env_values, "ETSY_API_KEY"),
-            "Authorization": f"Bearer {env_value(env_values, 'ETSY_ACCESS_TOKEN')}",
-        }
-        status, payload = http_json(
-            f"https://openapi.etsy.com/v3/application/shops/{env_value(env_values, 'ETSY_SHOP_ID')}",
-            headers=etsy_headers,
-        )
-        shop_name = payload.get("shop_name", "") if isinstance(payload, dict) else ""
-        print_result("etsy", status == 200, f"status={status} shop={shop_name}")
-        if status != 200:
+        try:
+            etsy_headers = {
+                "x-api-key": env_value(env_values, "ETSY_API_KEY"),
+                "Authorization": f"Bearer {env_value(env_values, 'ETSY_ACCESS_TOKEN')}",
+            }
+            status, payload = http_json(
+                f"https://openapi.etsy.com/v3/application/shops/{env_value(env_values, 'ETSY_SHOP_ID')}",
+                headers=etsy_headers,
+            )
+            shop_name = payload.get("shop_name", "") if isinstance(payload, dict) else ""
+            print_result("etsy", status == 200, f"status={status} shop={shop_name}")
+            if status != 200:
+                failures += 1
+        except Exception as exc:
             failures += 1
-    except Exception as exc:
-        failures += 1
-        print_result("etsy", False, str(exc))
+            print_result("etsy", False, str(exc))
 
     try:
         session = opener_with_cookies()
@@ -156,7 +158,7 @@ def main() -> int:
         failures += 1
         print_result("n8n", False, str(exc))
 
-    if args.send_telegram:
+    if args.send_telegram and not args.core_only:
         try:
             telegram_body = parse.urlencode(
                 {
