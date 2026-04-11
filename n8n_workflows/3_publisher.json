@@ -1,0 +1,115 @@
+{
+  "name": "HYDRA Publisher",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "schedule-publisher",
+      "name": "Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "listing_title",
+              "value": "Replace from prior builder workflow or webhook input"
+            },
+            {
+              "name": "listing_description",
+              "value": "Replace from prior builder workflow or webhook input"
+            },
+            {
+              "name": "listing_tags",
+              "value": "printable, planner, wall art, digital download"
+            }
+          ]
+        }
+      },
+      "id": "set-publisher-input",
+      "name": "Prepare Etsy Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        520,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://openapi.etsy.com/v3/application/shops/{{$env.ETSY_SHOP_ID}}/listings",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ETSY_API_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.ETSY_ACCESS_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"title\": $json.listing_title, \"description\": $json.listing_description, \"who_made\": \"i_did\", \"when_made\": \"2020_2026\", \"taxonomy_id\": 1, \"type\": \"download\", \"is_supply\": false, \"should_auto_renew\": true, \"price\": 4.99, \"quantity\": 999, \"tags\": $json.listing_tags.split(',').map(tag => tag.trim())}"
+      },
+      "id": "etsy-create-listing",
+      "name": "Create Etsy Listing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        280
+      ]
+    }
+  ],
+  "connections": {
+    "Every 30 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Prepare Etsy Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Etsy Payload": {
+      "main": [
+        [
+          {
+            "node": "Create Etsy Listing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "versionId": "hydra-publisher-v1"
+}

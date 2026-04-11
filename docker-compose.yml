@@ -1,0 +1,63 @@
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: hydra_n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      GENERIC_TIMEZONE: Europe/Bucharest
+      N8N_SECURE_COOKIE: "false"
+    volumes:
+      - ./n8n_data:/home/node/.n8n
+    networks:
+      - hydra_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: hydra_redis
+    restart: always
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - ./redis_data:/data
+    networks:
+      - hydra_net
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: hydra_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: hydra
+      POSTGRES_PASSWORD: hydra_secure_2026
+      POSTGRES_DB: hydra_db
+    volumes:
+      - hydra_postgres_store:/var/lib/postgresql/data
+    networks:
+      - hydra_net
+
+  brain:
+    image: python:3.11-slim
+    container_name: hydra_brain
+    restart: always
+    working_dir: /app
+    volumes:
+      - ./brain:/app
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    depends_on:
+      - redis
+      - postgres
+    command: >
+      sh -c "pip install --no-cache-dir openai redis python-dotenv supabase &&
+      python main.py"
+    networks:
+      - hydra_net
+
+networks:
+  hydra_net:
+    name: hydra_net
+
+volumes:
+  hydra_postgres_store:
+    name: hydra_postgres_store

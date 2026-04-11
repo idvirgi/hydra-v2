@@ -1,0 +1,33 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Hetzner
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            if [ ! -d "$HOME/hydra-v2/.git" ]; then
+              git clone https://github.com/denideni/hydra-v2.git "$HOME/hydra-v2"
+            fi
+            cd "$HOME/hydra-v2"
+            git pull --ff-only origin main
+            docker compose up -d --build
+            sleep 20
+            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" python:3.11-slim \
+              python /work/tools/sync_n8n_workflows.py \
+              --base-url http://hydra_n8n:5678 \
+              --env-file /work/.env \
+              --workflow-dir /work/n8n_workflows
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+            docker logs hydra_brain --tail 20

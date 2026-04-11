@@ -1,0 +1,168 @@
+{
+  "name": "HYDRA Scout",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 48
+            }
+          ]
+        }
+      },
+      "id": "schedule-scout",
+      "name": "Every 48 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "scout:etsy"
+      },
+      "id": "redis-read-cache",
+      "name": "Read Scout Cache",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.value || ''}}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if-cache-miss",
+      "name": "Cache Miss?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.OPENROUTER_BASE_URL}}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.OPENROUTER_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\": $env.MODEL_SCOUT, \"temperature\": 0.3, \"response_format\": {\"type\": \"json_object\"}, \"messages\": [{\"role\": \"system\", \"content\": \"Return valid JSON only.\"}, {\"role\": \"user\", \"content\": \"Find the top 5 Etsy niches for US digital printables with high demand and low competition. Return JSON with generated_at and niches[].\"}]}"
+      },
+      "id": "call-openrouter-scout",
+      "name": "Run Scout Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1020,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "scout:etsy",
+        "value": "={{JSON.stringify($json)}}",
+        "expire": true,
+        "ttl": 172800
+      },
+      "id": "redis-write-cache",
+      "name": "Cache Scout Result",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1280,
+        220
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 48 Hours": {
+      "main": [
+        [
+          {
+            "node": "Read Scout Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Scout Cache": {
+      "main": [
+        [
+          {
+            "node": "Cache Miss?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Miss?": {
+      "main": [
+        [
+          {
+            "node": "Run Scout Model",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Run Scout Model": {
+      "main": [
+        [
+          {
+            "node": "Cache Scout Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "versionId": "hydra-scout-v1"
+}

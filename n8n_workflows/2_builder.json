@@ -1,0 +1,166 @@
+{
+  "name": "HYDRA Builder",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-builder",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "lPop",
+        "key": "hydra:build_queue"
+      },
+      "id": "redis-pop-queue",
+      "name": "Pop Build Queue",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "redis": {
+          "id": "hydra-redis",
+          "name": "HYDRA Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.value || ''}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if-item-present",
+      "name": "Queue Item Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "nichePayload",
+              "value": "={{$json.value}}"
+            }
+          ]
+        }
+      },
+      "id": "set-builder-input",
+      "name": "Prepare Builder Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1020,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.OPENROUTER_BASE_URL}}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.OPENROUTER_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\": $env.MODEL_BUILDER, \"temperature\": 0.4, \"response_format\": {\"type\": \"json_object\"}, \"messages\": [{\"role\": \"system\", \"content\": \"Return valid JSON only.\"}, {\"role\": \"user\", \"content\": \"Using this queue payload: \" + $json.nichePayload + \" generate an Etsy printable listing draft with title, description, 13 tags, materials, and price recommendation in USD.\"}]}"
+      },
+      "id": "call-openrouter-builder",
+      "name": "Generate Listing Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Pop Build Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pop Build Queue": {
+      "main": [
+        [
+          {
+            "node": "Queue Item Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Item Present?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Builder Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Prepare Builder Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generate Listing Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "versionId": "hydra-builder-v1"
+}

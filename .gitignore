@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+n8n_data/
+redis_data/
+postgres_data/
+logs/
