@@ -52,6 +52,7 @@ STOPWORDS = {
 }
 
 APIFY_ETSY_ACTOR_ID = read_env("APIFY_ETSY_ACTOR_ID", "crawlerbros~etsy-scraper")
+APIFY_ACTOR_MEMORY_MB = int(read_env("APIFY_ACTOR_MEMORY_MB", "256"))
 HYDRA_MARKET_SNAPSHOT_TTL_HOURS = int(read_env("HYDRA_MARKET_SNAPSHOT_TTL_HOURS", "48"))
 HYDRA_SCOUT_CANDIDATE_COUNT = int(read_env("HYDRA_SCOUT_CANDIDATE_COUNT", "8"))
 HYDRA_SCOUT_CANDIDATE_COUNT_CHEAP = int(read_env("HYDRA_SCOUT_CANDIDATE_COUNT_CHEAP", "5"))
@@ -371,7 +372,10 @@ def latest_snapshot(conn, query: str) -> dict[str, Any] | None:
 
 
 def fetch_apify_market_snapshot(query: str, max_items: int, logger) -> list[dict[str, Any]]:
-    url = f"https://api.apify.com/v2/acts/{APIFY_ETSY_ACTOR_ID}/run-sync-get-dataset-items?token={apify_token()}"
+    url = (
+        f"https://api.apify.com/v2/acts/{APIFY_ETSY_ACTOR_ID}/run-sync-get-dataset-items"
+        f"?token={apify_token()}&memory={APIFY_ACTOR_MEMORY_MB}"
+    )
     payload = {
         "startUrls": [{"url": f"https://www.etsy.com/search?q={query.replace(' ', '+')}"}],
         "maxItems": max_items,
@@ -408,6 +412,12 @@ def fetch_apify_market_snapshot(query: str, max_items: int, logger) -> list[dict
                 f"Apify rate limited: {detail[:300]}",
                 "rate_limit",
                 retriable=True,
+            ) from exc
+        if exc.code == 402:
+            raise HydraClassifiedError(
+                f"Apify capacity blocked: {detail[:300]}",
+                "blocked_external",
+                blocked=True,
             ) from exc
         if exc.code >= 500:
             raise HydraClassifiedError(
