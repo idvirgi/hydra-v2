@@ -22,6 +22,14 @@ from hydra_runtime import (  # noqa: E402
 )
 
 
+def purge_verification_rows(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM hydra_attempts WHERE lineage_id LIKE 'verify-%' OR lane='test'")
+        cur.execute("DELETE FROM hydra_work_items WHERE lineage_id LIKE 'verify-%' OR lane='test'")
+        cur.execute("DELETE FROM hydra_cycles WHERE lineage_id LIKE 'verify-%'")
+    conn.commit()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Deterministic queue/runtime verification for HYDRA.")
     parser.add_argument("--cleanup", action="store_true")
@@ -30,6 +38,7 @@ def main() -> int:
     conn = db_connect()
     cache = redis_client()
     ensure_schema(conn)
+    purge_verification_rows(conn)
 
     lineage_id = f"verify-{uuid.uuid4().hex}"
     cycle_id = f"verify-{uuid.uuid4().hex}"
@@ -56,8 +65,19 @@ def main() -> int:
         retriable=True,
         blocked=False,
     )
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, next_attempt_at FROM hydra_work_items WHERE item_id=%s",
+            (item["item_id"],),
+        )
+        retried_row = cur.fetchone()
+        cur.execute(
+            "UPDATE hydra_work_items SET next_attempt_at=NOW() WHERE item_id=%s",
+            (item["item_id"],),
+        )
+    conn.commit()
     claimed_retry = claim_next_work_item(conn, cache, "test", "verify-worker", lease_seconds=30)
-    if outcome_retry != "queued" or not claimed_retry:
+    if outcome_retry != "queued" or not retried_row or retried_row["status"] != "queued" or not claimed_retry:
         print("FAIL verify-retry: retriable item was not requeued")
         return 1
 
@@ -91,11 +111,7 @@ def main() -> int:
     print(f"QUEUE_METRICS={json.dumps(metrics, default=str)}")
 
     if args.cleanup:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM hydra_attempts WHERE lineage_id=%s", (lineage_id,))
-            cur.execute("DELETE FROM hydra_work_items WHERE lineage_id=%s", (lineage_id,))
-            cur.execute("DELETE FROM hydra_cycles WHERE lineage_id=%s", (lineage_id,))
-        conn.commit()
+        purge_verification_rows(conn)
     return 0
 
 
