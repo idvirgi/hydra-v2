@@ -56,6 +56,9 @@ jobs:
               python /work/tools/verify_autonomy_foundation.py \
               --cleanup
             docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+              python /work/tools/verify_decision_engine.py \
+              --force-refresh
+            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/runtime_status.py
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
             docker logs hydra_brain --tail 20
