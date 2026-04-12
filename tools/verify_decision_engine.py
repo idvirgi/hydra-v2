@@ -34,6 +34,7 @@ def main() -> int:
         logger,
         enqueue=args.enqueue,
         force_refresh=args.force_refresh,
+        wait_for_lock_seconds=600,
     )
 
     if summary["candidate_count"] < 3:

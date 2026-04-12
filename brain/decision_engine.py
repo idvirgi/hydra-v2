@@ -52,21 +52,22 @@ STOPWORDS = {
 }
 
 APIFY_ETSY_ACTOR_ID = read_env("APIFY_ETSY_ACTOR_ID", "crawlerbros~etsy-scraper")
-APIFY_ACTOR_MEMORY_MB = int(read_env("APIFY_ACTOR_MEMORY_MB", "256"))
 HYDRA_MARKET_SNAPSHOT_TTL_HOURS = int(read_env("HYDRA_MARKET_SNAPSHOT_TTL_HOURS", "48"))
 HYDRA_SCOUT_CANDIDATE_COUNT = int(read_env("HYDRA_SCOUT_CANDIDATE_COUNT", "8"))
 HYDRA_SCOUT_CANDIDATE_COUNT_CHEAP = int(read_env("HYDRA_SCOUT_CANDIDATE_COUNT_CHEAP", "5"))
 HYDRA_SHORTLIST_SIZE = int(read_env("HYDRA_SHORTLIST_SIZE", "3"))
 HYDRA_BUILD_HANDOFF_LIMIT = int(read_env("HYDRA_BUILD_HANDOFF_LIMIT", "1"))
 HYDRA_EXPLORE_MIN_COUNT = int(read_env("HYDRA_EXPLORE_MIN_COUNT", "1"))
-HYDRA_APIFY_MAX_ITEMS = int(read_env("HYDRA_APIFY_MAX_ITEMS", "8"))
-HYDRA_APIFY_MAX_ITEMS_CHEAP = int(read_env("HYDRA_APIFY_MAX_ITEMS_CHEAP", "5"))
+HYDRA_APIFY_MAX_ITEMS = int(read_env("HYDRA_APIFY_MAX_ITEMS", "4"))
+HYDRA_APIFY_MAX_ITEMS_CHEAP = int(read_env("HYDRA_APIFY_MAX_ITEMS_CHEAP", "3"))
 HYDRA_MODEL_ANALYSIS_LIMIT = int(read_env("HYDRA_MODEL_ANALYSIS_LIMIT", "4"))
 HYDRA_MODEL_ANALYSIS_LIMIT_CHEAP = int(read_env("HYDRA_MODEL_ANALYSIS_LIMIT_CHEAP", "2"))
 HYDRA_MIN_COMPOSITE_SCORE = float(read_env("HYDRA_MIN_COMPOSITE_SCORE", "60"))
 HYDRA_MIN_EXPLORE_SCORE = float(read_env("HYDRA_MIN_EXPLORE_SCORE", "58"))
 HYDRA_LOW_COST_REMAINING_USD = float(read_env("HYDRA_LOW_COST_REMAINING_USD", "0.9"))
+HYDRA_DECISION_LOCK_SECONDS = int(read_env("HYDRA_DECISION_LOCK_SECONDS", "900"))
 SCOUT_CACHE_KEY = "decision:scout:etsy:v3"
+DECISION_LOCK_KEY = "hydra:decision:cycle:lock"
 
 
 def clamp(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
@@ -93,6 +94,11 @@ def normalize_key(text: str) -> str:
 
 def tokenize(text: str) -> list[str]:
     return [token for token in TOKEN_RE.findall(text.lower()) if token not in STOPWORDS]
+
+
+def build_search_query(text: str) -> str:
+    tokens = TOKEN_RE.findall(text.lower())[:5]
+    return " ".join(tokens) if tokens else text.strip()
 
 
 def jaccard_similarity(left: str, right: str) -> float:
@@ -372,10 +378,7 @@ def latest_snapshot(conn, query: str) -> dict[str, Any] | None:
 
 
 def fetch_apify_market_snapshot(query: str, max_items: int, logger) -> list[dict[str, Any]]:
-    url = (
-        f"https://api.apify.com/v2/acts/{APIFY_ETSY_ACTOR_ID}/run-sync-get-dataset-items"
-        f"?token={apify_token()}&memory={APIFY_ACTOR_MEMORY_MB}"
-    )
+    url = f"https://api.apify.com/v2/acts/{APIFY_ETSY_ACTOR_ID}/run-sync-get-dataset-items?token={apify_token()}"
     payload = {
         "startUrls": [{"url": f"https://www.etsy.com/search?q={query.replace(' ', '+')}"}],
         "maxItems": max_items,
@@ -387,6 +390,7 @@ def fetch_apify_market_snapshot(query: str, max_items: int, logger) -> list[dict
         method="POST",
     )
     started = time.time()
+    logger.info("Fetching Apify market snapshot | actor=%s query=%s max_items=%s", APIFY_ETSY_ACTOR_ID, query, max_items)
     try:
         with request.urlopen(req, timeout=180) as response:
             body = response.read().decode("utf-8", "replace")
@@ -497,7 +501,7 @@ def compute_market_metrics(query: str, items: list[dict[str, Any]]) -> dict[str,
 
 
 def get_market_snapshot(conn, candidate: dict[str, Any], logger, mode: dict[str, Any], cycle_id: str) -> dict[str, Any]:
-    query = candidate["primary_keyword"]
+    query = candidate["search_query"]
     existing = latest_snapshot(conn, query)
     if existing and existing["created_at"] >= now_utc() - dt.timedelta(hours=HYDRA_MARKET_SNAPSHOT_TTL_HOURS):
         return {
@@ -533,7 +537,7 @@ def get_market_snapshot(conn, candidate: dict[str, Any], logger, mode: dict[str,
         "lineage_id": candidate["lineage_id"],
         "source": "apify-live",
         "actor_id": APIFY_ETSY_ACTOR_ID,
-        "query": query,
+            "query": query,
         "sample_size": len(items),
         "listing_count_estimate": None,
         "listing_count_available": False,
@@ -566,6 +570,27 @@ def get_market_snapshot(conn, candidate: dict[str, Any], logger, mode: dict[str,
         )
     conn.commit()
     return {"snapshot_id": snapshot["snapshot_id"], "metrics": snapshot["metrics"], "items": items, "source": "apify-live"}
+
+
+def acquire_decision_lock(cache, wait_for_lock_seconds: int) -> str:
+    token = uuid.uuid4().hex
+    deadline = time.time() + max(0, wait_for_lock_seconds)
+    while True:
+        if cache.set(DECISION_LOCK_KEY, token, nx=True, ex=HYDRA_DECISION_LOCK_SECONDS):
+            return token
+        if time.time() >= deadline:
+            raise HydraClassifiedError(
+                "A decision cycle is already running.",
+                "backpressure",
+                retriable=True,
+            )
+        time.sleep(5)
+
+
+def release_decision_lock(cache, token: str) -> None:
+    current = cache.get(DECISION_LOCK_KEY)
+    if current == token:
+        cache.delete(DECISION_LOCK_KEY)
 
 
 def fetch_memory_snapshot(conn, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -1050,163 +1075,179 @@ def build_cycle_payload(
     }
 
 
-def run_decision_cycle(conn, cache, openrouter, logger, *, enqueue: bool = True, force_refresh: bool = False) -> dict[str, Any]:
+def run_decision_cycle(
+    conn,
+    cache,
+    openrouter,
+    logger,
+    *,
+    enqueue: bool = True,
+    force_refresh: bool = False,
+    wait_for_lock_seconds: int = 0,
+) -> dict[str, Any]:
     ensure_intelligence_schema(conn)
-    mode = decision_mode(cache, conn)
-    scout_payload = scout_candidates(openrouter, cache, conn, logger, mode, force_refresh=force_refresh)
-    raw_candidates = scout_payload.get("candidates", [])
-    deduped_candidates, deduped_count = dedupe_candidates(raw_candidates)
-    cycle_root = {"cycle_id": uuid.uuid4().hex, "lineage_id": uuid.uuid4().hex}
-    if not deduped_candidates:
-        raise HydraClassifiedError("All scout candidates were deduplicated out.", "invalid_payload")
+    lock_token = acquire_decision_lock(cache, wait_for_lock_seconds)
+    try:
+        mode = decision_mode(cache, conn)
+        scout_payload = scout_candidates(openrouter, cache, conn, logger, mode, force_refresh=force_refresh)
+        raw_candidates = scout_payload.get("candidates", [])
+        deduped_candidates, deduped_count = dedupe_candidates(raw_candidates)
+        cycle_root = {"cycle_id": uuid.uuid4().hex, "lineage_id": uuid.uuid4().hex}
+        if not deduped_candidates:
+            raise HydraClassifiedError("All scout candidates were deduplicated out.", "invalid_payload")
 
-    enriched: list[dict[str, Any]] = []
-    for candidate in deduped_candidates:
-        enriched_candidate = dict(candidate)
-        enriched_candidate["cycle_id"] = cycle_root["cycle_id"]
-        enriched_candidate["lineage_id"] = uuid.uuid4().hex
-        snapshot = get_market_snapshot(conn, enriched_candidate, logger, mode, cycle_root["cycle_id"])
-        enriched_candidate["grounded_metrics"] = {
-            **snapshot["metrics"],
-            "snapshot_id": snapshot["snapshot_id"],
-            "source": snapshot["source"],
-        }
-        enriched_candidate["market_snapshot_id"] = snapshot["snapshot_id"]
-        enriched_candidate["market_items_sample"] = snapshot["items"]
-        enriched_candidate["memory_snapshot"] = fetch_memory_snapshot(conn, enriched_candidate)
-        enriched_candidate["theme_key"] = normalize_key(enriched_candidate["keyword_family"]) or enriched_candidate["niche_key"]
-        enriched_candidate["candidate_payload"] = {
-            "schema_version": "hydra.intelligence.v1",
-            "cycle_id": cycle_root["cycle_id"],
-            "lineage_id": enriched_candidate["lineage_id"],
-            "niche": enriched_candidate["niche"],
-            "primary_keyword": enriched_candidate["primary_keyword"],
-            "keyword_family": enriched_candidate["keyword_family"],
-            "audience": enriched_candidate["audience"],
-            "product_angle": enriched_candidate["product_angle"],
-            "why_now": enriched_candidate["why_now"],
-            "seed_terms": enriched_candidate["seed_terms"],
-            "digital_fit_reason": enriched_candidate["digital_fit_reason"],
-        }
-        enriched.append(enriched_candidate)
-
-    heuristic_rank = sorted(
-        enriched,
-        key=lambda item: (
-            item["grounded_metrics"]["demand_signal"],
-            item["grounded_metrics"]["competition_signal"],
-            item["grounded_metrics"]["beatability_signal"],
-        ),
-        reverse=True,
-    )
-    analysis_targets = {candidate["lineage_id"] for candidate in heuristic_rank[: mode["analysis_limit"]]}
-
-    for candidate in enriched:
-        if candidate["lineage_id"] in analysis_targets:
-            candidate["model_judgment"] = model_analyze_candidate(openrouter, cache, candidate["candidate_payload"] | {"grounded_metrics": candidate["grounded_metrics"], "memory_snapshot": candidate["memory_snapshot"]}, mode)
-        else:
-            candidate["model_judgment"] = {
-                "status": "skipped_due_cost",
-                "judgment_score": 50,
-                "confidence": 45,
-                "recommended_action": "monitor",
-                "reason_codes": ["skipped_due_cost"],
-                "bull_case": [],
-                "bear_case": [],
-                "risk_summary": "Skipped model analysis because cycle was operating in cost-aware mode.",
+        enriched: list[dict[str, Any]] = []
+        for candidate in deduped_candidates:
+            enriched_candidate = dict(candidate)
+            enriched_candidate["cycle_id"] = cycle_root["cycle_id"]
+            enriched_candidate["lineage_id"] = uuid.uuid4().hex
+            enriched_candidate["search_query"] = build_search_query(enriched_candidate["primary_keyword"])
+            snapshot = get_market_snapshot(conn, enriched_candidate, logger, mode, cycle_root["cycle_id"])
+            enriched_candidate["grounded_metrics"] = {
+                **snapshot["metrics"],
+                "snapshot_id": snapshot["snapshot_id"],
+                "source": snapshot["source"],
+                "search_query": enriched_candidate["search_query"],
             }
-        scored = score_candidate(candidate, mode)
-        candidate.update(scored)
+            enriched_candidate["market_snapshot_id"] = snapshot["snapshot_id"]
+            enriched_candidate["market_items_sample"] = snapshot["items"]
+            enriched_candidate["memory_snapshot"] = fetch_memory_snapshot(conn, enriched_candidate)
+            enriched_candidate["theme_key"] = normalize_key(enriched_candidate["keyword_family"]) or enriched_candidate["niche_key"]
+            enriched_candidate["candidate_payload"] = {
+                "schema_version": "hydra.intelligence.v1",
+                "cycle_id": cycle_root["cycle_id"],
+                "lineage_id": enriched_candidate["lineage_id"],
+                "niche": enriched_candidate["niche"],
+                "primary_keyword": enriched_candidate["primary_keyword"],
+                "search_query": enriched_candidate["search_query"],
+                "keyword_family": enriched_candidate["keyword_family"],
+                "audience": enriched_candidate["audience"],
+                "product_angle": enriched_candidate["product_angle"],
+                "why_now": enriched_candidate["why_now"],
+                "seed_terms": enriched_candidate["seed_terms"],
+                "digital_fit_reason": enriched_candidate["digital_fit_reason"],
+            }
+            enriched.append(enriched_candidate)
 
-    selection = shortlist_candidates(enriched, lane_backlog(conn, "build"))
-    ordered = selection["ordered"]
-    shortlisted = selection["shortlisted"]
-    handoff = selection["handoff"]
-
-    telemetry = decision_telemetry(ordered, len(raw_candidates), deduped_count, shortlisted, handoff, mode)
-    cycle_payload = build_cycle_payload(cycle_root, scout_payload, ordered, shortlisted, telemetry)
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO hydra_cycles (
-                cycle_id, lineage_id, scout_payload, top_niche, debate_payload,
-                decision, score, status, created_at, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-            """,
-            (
-                cycle_payload["cycle_id"],
-                cycle_payload["lineage_id"],
-                Jsonb(cycle_payload["scout_payload"]),
-                Jsonb(cycle_payload["top_niche"]),
-                Jsonb(cycle_payload["debate_payload"]),
-                cycle_payload["decision"],
-                cycle_payload["score"],
-                cycle_payload["status"],
+        heuristic_rank = sorted(
+            enriched,
+            key=lambda item: (
+                item["grounded_metrics"]["demand_signal"],
+                item["grounded_metrics"]["competition_signal"],
+                item["grounded_metrics"]["beatability_signal"],
             ),
+            reverse=True,
         )
-    conn.commit()
-    persist_candidate_batch(conn, ordered)
+        analysis_targets = {candidate["lineage_id"] for candidate in heuristic_rank[: mode["analysis_limit"]]}
 
-    if enqueue:
-        for candidate in handoff:
-            payload = {
-                "schema_version": "hydra.autonomy.foundation.v1",
-                "lineage_id": candidate["lineage_id"],
-                "cycle_id": candidate["cycle_id"],
-                "lane": "build",
-                "queued_at": iso_utc(),
-                "niche": {
-                    "name": candidate["niche"],
-                    "score": candidate["composite_score"],
-                    "audience": candidate["audience"],
-                    "why_now": candidate["why_now"],
-                    "keywords": [candidate["primary_keyword"], *candidate["seed_terms"]][:8],
-                    "competition_notes": candidate["grounded_metrics"],
-                    "price_band_usd": candidate["grounded_metrics"].get("median_price"),
-                },
-                "scout": candidate["candidate_payload"],
-                "debate": {
-                    "decision": "GO",
-                    "score": candidate["composite_score"],
-                    "reason_codes": candidate["reason_codes"],
-                    "scores": candidate["scores"],
+        for candidate in enriched:
+            if candidate["lineage_id"] in analysis_targets:
+                candidate["model_judgment"] = model_analyze_candidate(openrouter, cache, candidate["candidate_payload"] | {"grounded_metrics": candidate["grounded_metrics"], "memory_snapshot": candidate["memory_snapshot"]}, mode)
+            else:
+                candidate["model_judgment"] = {
+                    "status": "skipped_due_cost",
+                    "judgment_score": 50,
+                    "confidence": 45,
+                    "recommended_action": "monitor",
+                    "reason_codes": ["skipped_due_cost"],
+                    "bull_case": [],
+                    "bear_case": [],
+                    "risk_summary": "Skipped model analysis because cycle was operating in cost-aware mode.",
+                }
+            scored = score_candidate(candidate, mode)
+            candidate.update(scored)
+
+        selection = shortlist_candidates(enriched, lane_backlog(conn, "build"))
+        ordered = selection["ordered"]
+        shortlisted = selection["shortlisted"]
+        handoff = selection["handoff"]
+
+        telemetry = decision_telemetry(ordered, len(raw_candidates), deduped_count, shortlisted, handoff, mode)
+        cycle_payload = build_cycle_payload(cycle_root, scout_payload, ordered, shortlisted, telemetry)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO hydra_cycles (
+                    cycle_id, lineage_id, scout_payload, top_niche, debate_payload,
+                    decision, score, status, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                """,
+                (
+                    cycle_payload["cycle_id"],
+                    cycle_payload["lineage_id"],
+                    Jsonb(cycle_payload["scout_payload"]),
+                    Jsonb(cycle_payload["top_niche"]),
+                    Jsonb(cycle_payload["debate_payload"]),
+                    cycle_payload["decision"],
+                    cycle_payload["score"],
+                    cycle_payload["status"],
+                ),
+            )
+        conn.commit()
+        persist_candidate_batch(conn, ordered)
+
+        if enqueue:
+            for candidate in handoff:
+                payload = {
+                    "schema_version": "hydra.autonomy.foundation.v1",
+                    "lineage_id": candidate["lineage_id"],
+                    "cycle_id": candidate["cycle_id"],
+                    "lane": "build",
+                    "queued_at": iso_utc(),
+                    "niche": {
+                        "name": candidate["niche"],
+                        "score": candidate["composite_score"],
+                        "audience": candidate["audience"],
+                        "why_now": candidate["why_now"],
+                        "keywords": [candidate["primary_keyword"], *candidate["seed_terms"]][:8],
+                        "competition_notes": candidate["grounded_metrics"],
+                        "price_band_usd": candidate["grounded_metrics"].get("median_price"),
+                    },
+                    "scout": candidate["candidate_payload"],
+                    "debate": {
+                        "decision": "GO",
+                        "score": candidate["composite_score"],
+                        "reason_codes": candidate["reason_codes"],
+                        "scores": candidate["scores"],
+                        "strategy_tag": candidate["strategy_tag"],
+                        "grounded_metrics": candidate["grounded_metrics"],
+                        "model_judgment": candidate["model_judgment"],
+                    },
+                }
+                enqueue_work_item(conn, cache, "build", candidate["lineage_id"], candidate["cycle_id"], payload)
+
+        summary = {
+            "cycle_id": cycle_root["cycle_id"],
+            "mode": mode["name"],
+            "candidate_count": len(ordered),
+            "shortlist_count": len(shortlisted),
+            "handoff_count": len(handoff),
+            "dynamic_threshold": selection["dynamic_threshold"],
+            "top_candidates": [
+                {
+                    "lineage_id": candidate["lineage_id"],
+                    "primary_keyword": candidate["primary_keyword"],
+                    "composite_score": candidate["composite_score"],
                     "strategy_tag": candidate["strategy_tag"],
-                    "grounded_metrics": candidate["grounded_metrics"],
-                    "model_judgment": candidate["model_judgment"],
-                },
-            }
-            enqueue_work_item(conn, cache, "build", candidate["lineage_id"], candidate["cycle_id"], payload)
-
-    summary = {
-        "cycle_id": cycle_root["cycle_id"],
-        "mode": mode["name"],
-        "candidate_count": len(ordered),
-        "shortlist_count": len(shortlisted),
-        "handoff_count": len(handoff),
-        "dynamic_threshold": selection["dynamic_threshold"],
-        "top_candidates": [
-            {
-                "lineage_id": candidate["lineage_id"],
-                "primary_keyword": candidate["primary_keyword"],
-                "composite_score": candidate["composite_score"],
-                "strategy_tag": candidate["strategy_tag"],
-                "decision": candidate["decision"],
-                "reason_codes": candidate["reason_codes"],
-            }
-            for candidate in ordered[: max(HYDRA_SHORTLIST_SIZE, 5)]
-        ],
-        "telemetry": telemetry,
-    }
-    logger.info(
-        "Decision cycle completed | cycle_id=%s mode=%s candidate_count=%s shortlist=%s handoff=%s",
-        summary["cycle_id"],
-        summary["mode"],
-        summary["candidate_count"],
-        summary["shortlist_count"],
-        summary["handoff_count"],
-    )
-    return summary
+                    "decision": candidate["decision"],
+                    "reason_codes": candidate["reason_codes"],
+                }
+                for candidate in ordered[: max(HYDRA_SHORTLIST_SIZE, 5)]
+            ],
+            "telemetry": telemetry,
+        }
+        logger.info(
+            "Decision cycle completed | cycle_id=%s mode=%s candidate_count=%s shortlist=%s handoff=%s",
+            summary["cycle_id"],
+            summary["mode"],
+            summary["candidate_count"],
+            summary["shortlist_count"],
+            summary["handoff_count"],
+        )
+        return summary
+    finally:
+        release_decision_lock(cache, lock_token)
 
 
 def record_candidate_feedback(conn, lineage_id: str, lane: str, outcome: str, classification: str | None = None) -> None:
