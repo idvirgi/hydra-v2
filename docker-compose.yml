@@ -4,15 +4,17 @@ services:
     container_name: hydra_n8n
     restart: always
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     environment:
       GENERIC_TIMEZONE: Europe/Bucharest
-      N8N_SECURE_COOKIE: "false"
+      N8N_SECURE_COOKIE: "true"
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      N8N_HOST: ${N8N_HOST:-178.104.169.181}
-      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      N8N_HOST: ${N8N_HOST:-static.181.169.104.178.clients.your-server.de}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-https}
       N8N_PORT: ${N8N_PORT:-5678}
-      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://178.104.169.181:5678}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-https://static.181.169.104.178.clients.your-server.de}
+      WEBHOOK_URL: ${WEBHOOK_URL:-https://static.181.169.104.178.clients.your-server.de/}
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
     volumes:
       - ./n8n_data:/home/node/.n8n
     networks:
@@ -27,6 +29,23 @@ services:
       timeout: 10s
       retries: 5
       start_period: 40s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: hydra_caddy
+    restart: always
+    depends_on:
+      n8n:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - hydra_net
 
   redis:
     image: redis:7-alpine
@@ -157,3 +176,7 @@ networks:
 volumes:
   hydra_postgres_store:
     name: hydra_postgres_store
+  caddy_data:
+    name: hydra_caddy_data
+  caddy_config:
+    name: hydra_caddy_config

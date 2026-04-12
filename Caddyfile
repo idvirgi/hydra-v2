@@ -1,0 +1,4 @@
+static.181.169.104.178.clients.your-server.de {
+    encode gzip zstd
+    reverse_proxy hydra_n8n:5678
+}
