@@ -7,6 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "brain"))
 
+from decision_engine import (  # noqa: E402
+    decision_candidate_rows,
+    decision_status_rows,
+    ensure_intelligence_schema,
+)
 from hydra_runtime import (  # noqa: E402
     blocked_or_dlq_items,
     circuit_state,
@@ -27,6 +32,7 @@ def main() -> int:
     cache = redis_client()
     conn = db_connect()
     ensure_schema(conn)
+    ensure_intelligence_schema(conn)
 
     print(f"DAILY_COST_USD={current_daily_cost(cache):.6f}")
     for provider in ("openrouter", "etsy"):
@@ -47,6 +53,16 @@ def main() -> int:
     for row in recent_attempts(conn, limit=20):
         print(json.dumps(row, default=str))
     print("RECENT_ATTEMPTS_END")
+
+    print("DECISION_CYCLES_BEGIN")
+    for row in decision_status_rows(conn, limit=10):
+        print(json.dumps(row, default=str))
+    print("DECISION_CYCLES_END")
+
+    print("RECENT_CANDIDATES_BEGIN")
+    for row in decision_candidate_rows(conn, limit=15):
+        print(json.dumps(row, default=str))
+    print("RECENT_CANDIDATES_END")
 
     if args.strict:
         terminal = blocked_or_dlq_items(conn)

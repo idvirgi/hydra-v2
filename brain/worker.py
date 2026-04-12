@@ -4,6 +4,7 @@ import logging
 import os
 import time
 
+from decision_engine import ensure_intelligence_schema, record_candidate_feedback
 from hydra_runtime import (
     DAILY_BUDGET_USD,
     HYDRA_CLAIM_TTL_SECONDS,
@@ -114,6 +115,7 @@ def process_build_item(conn, cache, openrouter, logger, item: dict) -> None:
             "schema_version": SCHEMA_VERSION,
         },
     )
+    record_candidate_feedback(conn, item["lineage_id"], "build", "succeeded")
     logger.info(
         "Build succeeded | item_id=%s lineage_id=%s draft_id=%s",
         item["item_id"],
@@ -148,6 +150,7 @@ def process_publish_item(conn, cache, logger, item: dict) -> None:
             "state": response.get("state", "draft"),
         },
     )
+    record_candidate_feedback(conn, item["lineage_id"], "publish", "succeeded")
     logger.info(
         "Publish succeeded | item_id=%s lineage_id=%s draft_id=%s listing_id=%s",
         item["item_id"],
@@ -162,6 +165,7 @@ def run_worker(lane: str) -> int:
     cache = redis_client()
     conn = db_connect()
     ensure_schema(conn)
+    ensure_intelligence_schema(conn)
     openrouter = openrouter_client() if lane == "build" else None
     if openrouter is not None:
         verify_openrouter_auth(openrouter, logger)
@@ -214,6 +218,7 @@ def run_worker(lane: str) -> int:
                 blocked=blocked,
                 response_payload={"lane": lane},
             )
+            record_candidate_feedback(conn, item["lineage_id"], lane, outcome, classification)
             logger.exception(
                 "Worker item failure | lane=%s item_id=%s classification=%s outcome=%s",
                 lane,
@@ -234,6 +239,7 @@ def main() -> int:
         cache = redis_client()
         conn = db_connect()
         ensure_schema(conn)
+        ensure_intelligence_schema(conn)
         cache.ping()
         backlog = lane_backlog(conn, args.lane)
         print(f"HEALTHCHECK_OK lane={args.lane} backlog={backlog}")
