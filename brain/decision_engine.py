@@ -117,6 +117,18 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[max(0, min(len(ordered) - 1, index))]
 
 
+def json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): json_safe(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    return value
+
+
 def ensure_intelligence_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -575,8 +587,8 @@ def get_market_snapshot(conn, candidate: dict[str, Any], logger, mode: dict[str,
                 snapshot["sample_size"],
                 snapshot["listing_count_estimate"],
                 snapshot["listing_count_available"],
-                Jsonb(snapshot["metrics"]),
-                Jsonb(snapshot["raw_items"]),
+                Jsonb(json_safe(snapshot["metrics"])),
+                Jsonb(json_safe(snapshot["raw_items"])),
             ),
         )
     conn.commit()
@@ -902,22 +914,22 @@ def record_candidate_decision(conn, candidate: dict[str, Any]) -> None:
                 candidate["keyword_key"],
                 candidate["primary_keyword"],
                 candidate["keyword_family"],
-                Jsonb(candidate["candidate_payload"]),
-                Jsonb(candidate["grounded_metrics"]),
-                Jsonb(candidate["model_judgment"]),
-                Jsonb(candidate["scores"]),
+                Jsonb(json_safe(candidate["candidate_payload"])),
+                Jsonb(json_safe(candidate["grounded_metrics"])),
+                Jsonb(json_safe(candidate["model_judgment"])),
+                Jsonb(json_safe(candidate["scores"])),
                 candidate["composite_score"],
                 candidate["novelty_score"],
                 candidate["strategy_tag"],
                 candidate["decision"],
-                Jsonb(candidate["reason_codes"]),
+                Jsonb(json_safe(candidate["reason_codes"])),
                 candidate.get("shortlist_rank"),
                 candidate.get("handoff_rank"),
                 candidate["status"],
                 candidate.get("build_status"),
                 candidate.get("publish_status"),
                 candidate.get("failure_classification"),
-                Jsonb(candidate["memory_snapshot"]),
+                Jsonb(json_safe(candidate["memory_snapshot"])),
             ),
         )
     conn.commit()
@@ -1211,9 +1223,9 @@ def run_decision_cycle(
                 (
                     cycle_payload["cycle_id"],
                     cycle_payload["lineage_id"],
-                    Jsonb(cycle_payload["scout_payload"]),
-                    Jsonb(cycle_payload["top_niche"]),
-                    Jsonb(cycle_payload["debate_payload"]),
+                    Jsonb(json_safe(cycle_payload["scout_payload"])),
+                    Jsonb(json_safe(cycle_payload["top_niche"])),
+                    Jsonb(json_safe(cycle_payload["debate_payload"])),
                     cycle_payload["decision"],
                     cycle_payload["score"],
                     cycle_payload["status"],
