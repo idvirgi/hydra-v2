@@ -55,7 +55,7 @@ jobs:
             docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/verify_autonomy_foundation.py \
               --cleanup
-            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+            docker run --rm --network hydra_net --env-file "$HOME/hydra-v2/.env" -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/verify_decision_engine.py \
               --force-refresh
             docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
