@@ -677,7 +677,7 @@ def model_analyze_candidate(openrouter, cache, candidate: dict[str, Any], mode: 
         "{\"judgment_score\":0,\"confidence\":0,\"recommended_action\":\"prioritize|monitor|reject\","
         "\"bull_case\":[\"string\"],\"bear_case\":[\"string\"],\"reason_codes\":[\"string\"],"
         "\"risk_summary\":\"string\"}. "
-        f"Candidate: {json.dumps(candidate, ensure_ascii=True)}"
+        f"Candidate: {json.dumps(json_safe(candidate), ensure_ascii=True)}"
     )
     return chat_json(
         openrouter,

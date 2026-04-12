@@ -55,9 +55,22 @@ jobs:
             docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/verify_autonomy_foundation.py \
               --cleanup
-            docker run --rm --network hydra_net --env-file "$HOME/hydra-v2/.env" -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+            docker stop hydra_brain >/dev/null 2>&1 || true
+            trap 'docker start hydra_brain >/dev/null 2>&1 || true' EXIT
+            PYTHONUNBUFFERED=1 docker run --rm --network hydra_net --env-file "$HOME/hydra-v2/.env" \
+              -e HYDRA_SCOUT_CANDIDATE_COUNT=3 \
+              -e HYDRA_SCOUT_CANDIDATE_COUNT_CHEAP=3 \
+              -e HYDRA_APIFY_MAX_ITEMS=3 \
+              -e HYDRA_APIFY_MAX_ITEMS_CHEAP=3 \
+              -e HYDRA_MODEL_ANALYSIS_LIMIT=1 \
+              -e HYDRA_MODEL_ANALYSIS_LIMIT_CHEAP=1 \
+              -e HYDRA_SHORTLIST_SIZE=2 \
+              -e HYDRA_BUILD_HANDOFF_LIMIT=1 \
+              -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/verify_decision_engine.py \
               --force-refresh
+            trap - EXIT
+            docker start hydra_brain >/dev/null
             docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/runtime_status.py
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
