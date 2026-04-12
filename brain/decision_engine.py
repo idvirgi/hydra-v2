@@ -389,49 +389,60 @@ def fetch_apify_market_snapshot(query: str, max_items: int, logger) -> list[dict
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    started = time.time()
     logger.info("Fetching Apify market snapshot | actor=%s query=%s max_items=%s", APIFY_ETSY_ACTOR_ID, query, max_items)
-    try:
-        with request.urlopen(req, timeout=180) as response:
-            body = response.read().decode("utf-8", "replace")
-            items = json.loads(body)
-            logger.info(
-                "Apify snapshot fetched | actor=%s query=%s items=%s duration_seconds=%.2f",
-                APIFY_ETSY_ACTOR_ID,
-                query,
-                len(items) if isinstance(items, list) else 0,
-                time.time() - started,
-            )
-            return items if isinstance(items, list) else []
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        if exc.code in {401, 403}:
-            raise HydraClassifiedError(
-                f"Apify access blocked: {detail[:300]}",
-                "blocked_external",
-                blocked=True,
-            ) from exc
-        if exc.code == 429:
-            raise HydraClassifiedError(
-                f"Apify rate limited: {detail[:300]}",
-                "rate_limit",
-                retriable=True,
-            ) from exc
-        if exc.code == 402:
-            raise HydraClassifiedError(
-                f"Apify capacity blocked: {detail[:300]}",
-                "blocked_external",
-                blocked=True,
-            ) from exc
-        if exc.code >= 500:
-            raise HydraClassifiedError(
-                f"Apify upstream error: {detail[:300]}",
-                "provider_error",
-                retriable=True,
-            ) from exc
-        raise HydraClassifiedError(f"Apify HTTP {exc.code}: {detail[:300]}", "fatal_http_error") from exc
-    except Exception as exc:
-        raise HydraClassifiedError(str(exc), "provider_timeout", retriable=True) from exc
+    for attempt in range(1, 3):
+        started = time.time()
+        try:
+            with request.urlopen(req, timeout=180) as response:
+                body = response.read().decode("utf-8", "replace")
+                items = json.loads(body)
+                logger.info(
+                    "Apify snapshot fetched | actor=%s query=%s items=%s duration_seconds=%.2f",
+                    APIFY_ETSY_ACTOR_ID,
+                    query,
+                    len(items) if isinstance(items, list) else 0,
+                    time.time() - started,
+                )
+                return items if isinstance(items, list) else []
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code in {401, 403}:
+                raise HydraClassifiedError(
+                    f"Apify access blocked: {detail[:300]}",
+                    "blocked_external",
+                    blocked=True,
+                ) from exc
+            if exc.code == 429:
+                if attempt == 1:
+                    time.sleep(5)
+                    continue
+                raise HydraClassifiedError(
+                    f"Apify rate limited: {detail[:300]}",
+                    "rate_limit",
+                    retriable=True,
+                ) from exc
+            if exc.code == 402:
+                raise HydraClassifiedError(
+                    f"Apify capacity blocked: {detail[:300]}",
+                    "blocked_external",
+                    blocked=True,
+                ) from exc
+            if exc.code >= 500:
+                if attempt == 1:
+                    time.sleep(5)
+                    continue
+                raise HydraClassifiedError(
+                    f"Apify upstream error: {detail[:300]}",
+                    "provider_error",
+                    retriable=True,
+                ) from exc
+            raise HydraClassifiedError(f"Apify HTTP {exc.code}: {detail[:300]}", "fatal_http_error") from exc
+        except Exception as exc:
+            if attempt == 1:
+                time.sleep(5)
+                continue
+            raise HydraClassifiedError(str(exc), "provider_timeout", retriable=True) from exc
+    raise HydraClassifiedError("Apify snapshot retry budget exhausted.", "provider_timeout", retriable=True)
 
 
 def compute_market_metrics(query: str, items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1097,12 +1108,29 @@ def run_decision_cycle(
             raise HydraClassifiedError("All scout candidates were deduplicated out.", "invalid_payload")
 
         enriched: list[dict[str, Any]] = []
+        grounding_failures: list[dict[str, Any]] = []
         for candidate in deduped_candidates:
             enriched_candidate = dict(candidate)
             enriched_candidate["cycle_id"] = cycle_root["cycle_id"]
             enriched_candidate["lineage_id"] = uuid.uuid4().hex
             enriched_candidate["search_query"] = build_search_query(enriched_candidate["primary_keyword"])
-            snapshot = get_market_snapshot(conn, enriched_candidate, logger, mode, cycle_root["cycle_id"])
+            try:
+                snapshot = get_market_snapshot(conn, enriched_candidate, logger, mode, cycle_root["cycle_id"])
+            except HydraClassifiedError as exc:
+                logger.warning(
+                    "Skipping candidate after grounding failure | keyword=%s query=%s classification=%s",
+                    enriched_candidate["primary_keyword"],
+                    enriched_candidate["search_query"],
+                    exc.classification,
+                )
+                grounding_failures.append(
+                    {
+                        "primary_keyword": enriched_candidate["primary_keyword"],
+                        "search_query": enriched_candidate["search_query"],
+                        "classification": exc.classification,
+                    }
+                )
+                continue
             enriched_candidate["grounded_metrics"] = {
                 **snapshot["metrics"],
                 "snapshot_id": snapshot["snapshot_id"],
@@ -1128,6 +1156,12 @@ def run_decision_cycle(
                 "digital_fit_reason": enriched_candidate["digital_fit_reason"],
             }
             enriched.append(enriched_candidate)
+        if len(enriched) < 3:
+            raise HydraClassifiedError(
+                f"Insufficient grounded candidates after Apify failures ({len(enriched)} succeeded).",
+                "blocked_external",
+                blocked=True,
+            )
 
         heuristic_rank = sorted(
             enriched,
@@ -1163,6 +1197,7 @@ def run_decision_cycle(
         handoff = selection["handoff"]
 
         telemetry = decision_telemetry(ordered, len(raw_candidates), deduped_count, shortlisted, handoff, mode)
+        telemetry["grounding_failures"] = grounding_failures
         cycle_payload = build_cycle_payload(cycle_root, scout_payload, ordered, shortlisted, telemetry)
         with conn.cursor() as cur:
             cur.execute(
