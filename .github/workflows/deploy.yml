@@ -15,6 +15,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          command_timeout: 20m
           script: |
             set -e
             APP_DIR="$HOME/hydra-v2"
@@ -56,6 +57,7 @@ jobs:
               python /work/tools/verify_autonomy_foundation.py \
               --cleanup
             docker stop hydra_brain >/dev/null 2>&1 || true
+            docker exec hydra_redis redis-cli DEL hydra:decision:cycle:lock >/dev/null 2>&1 || true
             trap 'docker start hydra_brain >/dev/null 2>&1 || true' EXIT
             PYTHONUNBUFFERED=1 docker run --rm --network hydra_net --env-file "$HOME/hydra-v2/.env" \
               -e HYDRA_SCOUT_CANDIDATE_COUNT=3 \
