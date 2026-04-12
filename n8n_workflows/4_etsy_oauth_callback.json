@@ -1,6 +1,6 @@
 {
   "name": "HYDRA Etsy OAuth Callback",
-  "active": false,
+  "active": true,
   "nodes": [
     {
       "parameters": {

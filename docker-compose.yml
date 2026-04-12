@@ -32,7 +32,7 @@ services:
     image: redis:7-alpine
     container_name: hydra_redis
     restart: always
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
     volumes:
       - ./redis_data:/data
     networks:
@@ -88,6 +88,62 @@ services:
         [
           "CMD-SHELL",
           "python -c \"import redis; redis.Redis(host='redis', port=6379).ping()\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  builder_worker:
+    image: hydra-brain:latest
+    container_name: hydra_builder
+    restart: always
+    working_dir: /app
+    volumes:
+      - ./brain:/app
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: python worker.py --lane build
+    networks:
+      - hydra_net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python worker.py --lane build --healthcheck",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  publisher_worker:
+    image: hydra-brain:latest
+    container_name: hydra_publisher
+    restart: always
+    working_dir: /app
+    volumes:
+      - ./brain:/app
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: python worker.py --lane publish
+    networks:
+      - hydra_net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python worker.py --lane publish --healthcheck",
         ]
       interval: 30s
       timeout: 10s

@@ -159,7 +159,7 @@ def workflow_payload(
         "settings": source.get("settings", {}),
         "staticData": source.get("staticData"),
         "tags": source.get("tags", []),
-        "active": False,
+        "active": bool(source.get("active", False)),
     }
 
 
@@ -198,6 +198,18 @@ def activate_workflow(
     )
 
 
+def deactivate_workflow(
+    opener: request.OpenerDirector,
+    base_url: str,
+    workflow_id: str,
+) -> None:
+    api_request(
+        opener,
+        "POST",
+        f"{base_url}/rest/workflows/{workflow_id}/deactivate",
+    )
+
+
 def upsert_workflow(
     opener: request.OpenerDirector,
     base_url: str,
@@ -208,6 +220,7 @@ def upsert_workflow(
     source = json.loads(workflow_file.read_text(encoding="utf-8"))
     payload = workflow_payload(source, credentials_by_name)
     current = existing_by_name.get(payload["name"])
+    desired_active = bool(source.get("active", False))
 
     if current:
         workflow_id = current["id"]
@@ -218,8 +231,14 @@ def upsert_workflow(
         workflow_id = created["id"]
         print(f"WORKFLOW_CREATED={payload['name']}")
 
-    activate_workflow(opener, base_url, workflow_id)
-    print(f"WORKFLOW_ACTIVATED={payload['name']}")
+    if desired_active:
+        activate_workflow(opener, base_url, workflow_id)
+        print(f"WORKFLOW_ACTIVATED={payload['name']}")
+    else:
+        detail = fetch_workflow_detail(opener, base_url, workflow_id)
+        if detail.get("active"):
+            deactivate_workflow(opener, base_url, workflow_id)
+        print(f"WORKFLOW_DEACTIVATED={payload['name']}")
 
 
 def main() -> int:

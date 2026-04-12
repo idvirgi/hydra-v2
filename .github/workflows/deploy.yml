@@ -52,5 +52,12 @@ jobs:
               --env-file /work/.env \
               --n8n-base-url http://hydra_n8n:5678 \
               --core-only
+            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+              python /work/tools/verify_autonomy_foundation.py \
+              --cleanup
+            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+              python /work/tools/runtime_status.py
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
             docker logs hydra_brain --tail 20
+            docker logs hydra_builder --tail 20
+            docker logs hydra_publisher --tail 20
