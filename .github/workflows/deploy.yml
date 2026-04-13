@@ -86,6 +86,8 @@ jobs:
               --n8n-base-url http://hydra_n8n:5678 \
               --core-only
             docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
+              python -c "from pathlib import Path; import sys; import redis; from tools.verify_integrations import parse_env_file, verify_etsy; values = parse_env_file(Path('/work/.env')); client = redis.Redis(host='redis', port=6379, decode_responses=True); ok, detail = verify_etsy(values, client); print(f'ETSY_READINESS={detail}'); sys.exit(0 if ok or detail.startswith('state=READY_PENDING_ETSY_APPROVAL') else 1)"
+            docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/verify_autonomy_foundation.py \
               --cleanup
             docker stop hydra_brain >/dev/null 2>&1 || true
