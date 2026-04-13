@@ -19,6 +19,7 @@ jobs:
           script: |
             set -e
             APP_DIR="$HOME/hydra-v2"
+            BACKUP_DIR_ROOT="$HOME/hydra-v2-backups"
             REPO_URL="https://github.com/idvirgi/hydra-v2.git"
             if [ -d "$APP_DIR/.git" ]; then
               cd "$APP_DIR"
@@ -39,15 +40,63 @@ jobs:
               fi
             fi
             cd "$APP_DIR"
+            mkdir -p "$BACKUP_DIR_ROOT"
+            if [ -f "$APP_DIR/.env" ]; then
+              FIX_BACKUP="$BACKUP_DIR_ROOT/hydra-etsy-oauth-fix-$(date +%Y%m%d-%H%M%S).tgz"
+              tar -czf "$FIX_BACKUP" -C "$APP_DIR" .env n8n_workflows/3_publisher.json n8n_workflows/4_etsy_oauth_callback.json
+              python3 - "$APP_DIR/.env" <<'PY'
+from pathlib import Path
+import sys
+
+env_path = Path(sys.argv[1])
+replacements = {
+    "ETSY_REDIRECT_URI": "https://static.181.169.104.178.clients.your-server.de/webhook/etsy/oauth/callback",
+    "N8N_EDITOR_BASE_URL": "https://static.181.169.104.178.clients.your-server.de",
+    "WEBHOOK_URL": "https://static.181.169.104.178.clients.your-server.de/",
+}
+
+existing_keys = set()
+lines = []
+for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    stripped = raw_line.strip()
+    if stripped and not stripped.startswith("#") and "=" in raw_line:
+        key, _ = raw_line.split("=", 1)
+        key = key.strip()
+        if key in replacements:
+            lines.append(f"{key}={replacements[key]}")
+            existing_keys.add(key)
+            continue
+        existing_keys.add(key)
+    lines.append(raw_line)
+
+for key, value in replacements.items():
+    if key not in existing_keys:
+        lines.append(f"{key}={value}")
+
+env_path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+PY
+              grep -E '^(ETSY_REDIRECT_URI|N8N_EDITOR_BASE_URL|WEBHOOK_URL)=' "$APP_DIR/.env"
+            fi
             mkdir -p n8n_data logs
             chown -R 1000:1000 n8n_data
             docker compose up -d --build
             until curl -sf http://127.0.0.1:5678 >/dev/null; do sleep 5; done
+            docker exec hydra_n8n printenv ETSY_REDIRECT_URI N8N_EDITOR_BASE_URL WEBHOOK_URL || true
             docker run --rm --network host -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/sync_n8n_workflows.py \
               --base-url http://127.0.0.1:5678 \
               --env-file /work/.env \
               --workflow-dir /work/n8n_workflows
+            CALLBACK_STATUS=$(curl -ksS -o /tmp/hydra_etsy_callback_probe.txt -w '%{http_code}' "https://static.181.169.104.178.clients.your-server.de/webhook/etsy/oauth/callback?code=hydra_probe_invalid&state=hydra_probe_state")
+            echo "CALLBACK_PROBE_STATUS=$CALLBACK_STATUS"
+            if grep -qi 'access to env vars denied' /tmp/hydra_etsy_callback_probe.txt; then
+              echo 'CALLBACK_ENV_ACCESS_ERROR=YES'
+              cat /tmp/hydra_etsy_callback_probe.txt
+              exit 1
+            fi
+            echo 'CALLBACK_ENV_ACCESS_ERROR=NO'
+            head -c 400 /tmp/hydra_etsy_callback_probe.txt || true
+            echo
             docker run --rm --network hydra_net -v "$HOME/hydra-v2:/work" hydra-brain:latest \
               python /work/tools/verify_integrations.py \
               --env-file /work/.env \

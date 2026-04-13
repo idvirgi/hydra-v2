@@ -20,7 +20,7 @@
     {
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const query = $json.query || $json;\nconst code = query.code || '';\nconst state = query.state || '';\nconst placeholder = (value) => !value || String(value).includes('REPLACE_ME');\nconst keystring = placeholder($env.ETSY_KEYSTRING) ? '' : $env.ETSY_KEYSTRING;\nconst redirectUri = placeholder($env.ETSY_REDIRECT_URI) ? '' : $env.ETSY_REDIRECT_URI;\nconst shopName = $env.ETSY_SHOP_NAME || '';\nif (!code || !state) {\n  throw new Error('Missing code or state in Etsy OAuth callback');\n}\nif (!keystring) {\n  throw new Error('Missing ETSY_KEYSTRING in n8n runtime');\n}\nif (!redirectUri) {\n  throw new Error('Missing ETSY_REDIRECT_URI in n8n runtime');\n}\nreturn [{\n  json: {\n    code,\n    code_verifier: state,\n    client_id: keystring,\n    redirect_uri: redirectUri,\n    shop_name: shopName\n  }\n}];"
+        "jsCode": "const query = $json.query || $json;\nconst code = query.code || '';\nconst state = query.state || '';\nconst keystring = 'ex0jlq9tkyf0hifp5e63ief3';\nconst redirectUri = 'https://static.181.169.104.178.clients.your-server.de/webhook/etsy/oauth/callback';\nconst shopName = 'DeniDeniCrafts';\nif (!code || !state) {\n  throw new Error('Missing code or state in Etsy OAuth callback');\n}\nreturn [{\n  json: {\n    code,\n    code_verifier: state,\n    client_id: keystring,\n    redirect_uri: redirectUri,\n    shop_name: shopName\n  }\n}];"
       },
       "id": "parse-etsy-callback",
       "name": "Parse Etsy Callback",
@@ -34,7 +34,7 @@
     {
       "parameters": {
         "url": "https://api.etsy.com/v3/public/oauth/token",
-        "method": "POST",
+        "requestMethod": "POST",
         "responseFormat": "json",
         "sendBody": true,
         "bodyContentType": "form-urlencoded",
@@ -78,7 +78,7 @@
     {
       "parameters": {
         "url": "=https://openapi.etsy.com/v3/application/shops?shop_name={{encodeURIComponent($('Parse Etsy Callback').item.json.shop_name)}}&limit=10",
-        "method": "GET",
+        "requestMethod": "GET",
         "responseFormat": "json",
         "headerParametersUi": {
           "parameter": [
