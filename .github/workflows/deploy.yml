@@ -44,37 +44,19 @@ jobs:
             if [ -f "$APP_DIR/.env" ]; then
               FIX_BACKUP="$BACKUP_DIR_ROOT/hydra-etsy-oauth-fix-$(date +%Y%m%d-%H%M%S).tgz"
               tar -czf "$FIX_BACKUP" -C "$APP_DIR" .env n8n_workflows/3_publisher.json n8n_workflows/4_etsy_oauth_callback.json
-              python3 - "$APP_DIR/.env" <<'PY'
-              from pathlib import Path
-              import sys
-              
-              env_path = Path(sys.argv[1])
-              replacements = {
-                  "ETSY_REDIRECT_URI": "https://static.181.169.104.178.clients.your-server.de/webhook/etsy/oauth/callback",
-                  "N8N_EDITOR_BASE_URL": "https://static.181.169.104.178.clients.your-server.de",
-                  "WEBHOOK_URL": "https://static.181.169.104.178.clients.your-server.de/",
+              upsert_env() {
+                key="$1"
+                value="$2"
+                file="$3"
+                if grep -q "^${key}=" "$file"; then
+                  sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+                else
+                  printf '%s=%s\n' "$key" "$value" >> "$file"
+                fi
               }
-              
-              existing_keys = set()
-              lines = []
-              for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-                  stripped = raw_line.strip()
-                  if stripped and not stripped.startswith("#") and "=" in raw_line:
-                      key, _ = raw_line.split("=", 1)
-                      key = key.strip()
-                      if key in replacements:
-                          lines.append(f"{key}={replacements[key]}")
-                          existing_keys.add(key)
-                          continue
-                      existing_keys.add(key)
-                  lines.append(raw_line)
-              
-              for key, value in replacements.items():
-                  if key not in existing_keys:
-                      lines.append(f"{key}={value}")
-              
-              env_path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
-              PY
+              upsert_env ETSY_REDIRECT_URI "https://static.181.169.104.178.clients.your-server.de/webhook/etsy/oauth/callback" "$APP_DIR/.env"
+              upsert_env N8N_EDITOR_BASE_URL "https://static.181.169.104.178.clients.your-server.de" "$APP_DIR/.env"
+              upsert_env WEBHOOK_URL "https://static.181.169.104.178.clients.your-server.de/" "$APP_DIR/.env"
               grep -E '^(ETSY_REDIRECT_URI|N8N_EDITOR_BASE_URL|WEBHOOK_URL)=' "$APP_DIR/.env"
             fi
             mkdir -p n8n_data logs
